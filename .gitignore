@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+uv.lock
+
+# Node.js
+node_modules/
+npm-debug.log*
+dist/
+
+# Environment
+.env
+
+# Logs
+*.log
+logs/
+
+# Downloads / temp
+downloads/
+screenshots/
+
+# Replit internal
+.pythonlibs/
+.upm/
+.replit
+replit.nix
+.breakpoints
+attached_assets/

@@ -1,0 +1,19 @@
+{
+  "name": "image-crawler-worker",
+  "version": "1.0.0",
+  "description": "分布式图片采集Worker - Playwright浏览器自动化",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "playwright": "^1.40.1",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

@@ -136,6 +136,26 @@ router.post('/pull', async (req, res) => {
       }
 
       jobRunningCounts[task.job_id]++;
+
+      let taskFilters = null;
+      try {
+        const [filterRows] = await conn.execute('SELECT * FROM job_filters WHERE job_id = ?', [task.job_id]);
+        if (filterRows.length > 0) {
+          const f = filterRows[0];
+          taskFilters = {
+            logic_mode: f.logic_mode,
+            min_like: f.min_like,
+            min_favorite: f.min_favorite,
+            min_comment: f.min_comment,
+            min_share: f.min_share,
+            min_width: f.min_width,
+            min_height: f.min_height,
+            exclude_video: f.exclude_video,
+            exclude_collage: f.exclude_collage,
+          };
+        }
+      } catch {}
+
       assignedTasks.push({
         id: task.id,
         job_id: task.job_id,
@@ -147,6 +167,7 @@ router.post('/pull', async (req, res) => {
         page_timeout_seconds: task.page_timeout_seconds,
         max_retry_count: task.max_retry_count,
         retry_count: task.retry_count,
+        filters: taskFilters,
         source_image_id: task.source_image_id
       });
     }

@@ -32,9 +32,20 @@ function adaptSql(sql) {
   return adapted;
 }
 
+function hasReturningId(sql) {
+  return /RETURNING\s+id/i.test(sql);
+}
+
 function wrapResult(sql, rows) {
-  if (sql.trim().toUpperCase().startsWith('INSERT') && rows.insertId) {
+  const upperSql = sql.trim().toUpperCase();
+  if (upperSql.startsWith('INSERT') && rows.insertId) {
     return [[{ id: rows.insertId }]];
+  }
+  if (upperSql.startsWith('UPDATE') && hasReturningId(sql)) {
+    if (rows.affectedRows > 0) {
+      return [[{ id: 1 }]];
+    }
+    return [[]];
   }
   return [rows];
 }

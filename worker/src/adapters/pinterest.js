@@ -13,7 +13,10 @@ class PinterestAdapter extends BaseAdapter {
       timeout
     });
 
-    if (task.task_type === 'detail') {
+    const url = task.target_url || '';
+    const isDetailUrl = /\/pin\/\d+/i.test(url);
+
+    if (task.task_type === 'detail' || isDetailUrl) {
       return this.crawlDetail(page, task);
     }
 

@@ -64,8 +64,12 @@ async function executeTask(pool, task) {
   let page;
   try {
     console.log(`[Task] 开始执行 #${task.id} - ${task.task_type} - ${task.target_url}`);
-    page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      viewport: { width: 1920, height: 1080 },
+      locale: 'en-US',
+    });
+    page = await context.newPage();
 
     const adapter = AdapterFactory.create(task.site_type || 'generic');
     const result = await adapter.crawl(page, task);
@@ -95,7 +99,9 @@ async function executeTask(pool, task) {
     }
   } finally {
     if (page) {
+      const ctx = page.context();
       try { await page.close(); } catch {}
+      try { await ctx.close(); } catch {}
     }
     pool.release(browser);
   }

@@ -30,6 +30,15 @@ class PinterestAdapter extends BaseAdapter {
     }
 
     const rawPins = await page.evaluate(() => {
+      function parseCount(text) {
+        if (!text) return 0;
+        text = text.trim().toLowerCase().replace(/,/g, '');
+        if (text.includes('k')) return Math.round(parseFloat(text) * 1000);
+        if (text.includes('m')) return Math.round(parseFloat(text) * 1000000);
+        const num = parseInt(text);
+        return isNaN(num) ? 0 : num;
+      }
+
       const pins = Array.from(document.querySelectorAll('[data-test-id="pin"], [role="listitem"]'));
       return pins.map(pin => {
         const img = pin.querySelector('img');
@@ -41,23 +50,48 @@ class PinterestAdapter extends BaseAdapter {
         if (src.includes('236x')) highRes = src.replace('236x', 'originals');
         else if (src.includes('474x')) highRes = src.replace('474x', 'originals');
 
+        let like_count = 0;
+        let comment_count = 0;
+        let favorite_count = 0;
+
+        const countEls = pin.querySelectorAll('[data-test-id*="count"], [data-test-id*="reaction"], span');
+        for (const el of countEls) {
+          const text = el.textContent.trim();
+          if (/^\d[\d,.]*[kmKM]?$/.test(text)) {
+            const count = parseCount(text);
+            const parent = el.parentElement;
+            const nearby = parent ? parent.textContent.toLowerCase() : '';
+            const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+            const combined = nearby + ' ' + ariaLabel;
+
+            if (/save|repin|收藏|保存/.test(combined)) {
+              favorite_count = Math.max(favorite_count, count);
+            } else if (/comment|评论/.test(combined)) {
+              comment_count = Math.max(comment_count, count);
+            } else if (/like|react|赞|love/.test(combined)) {
+              like_count = Math.max(like_count, count);
+            } else if (count > 0 && like_count === 0) {
+              like_count = count;
+            }
+          }
+        }
+
         return {
           image_url: highRes || src,
           detail_page_url: href && href.includes('/pin/') ? href : null,
           source_page_url: window.location.href,
           width: img ? img.naturalWidth : null,
           height: img ? img.naturalHeight : null,
+          like_count,
+          favorite_count,
+          comment_count,
+          share_count: 0,
         };
       }).filter(p => p.image_url && p.image_url.startsWith('http'));
     });
 
     const images = rawPins.map(p => this.normalizeImage(p));
-
-    const new_tasks = rawPins
-      .filter(p => p.detail_page_url)
-      .map(p => ({ target_url: p.detail_page_url, task_type: 'detail', priority: 5 }));
-
-    return { images: [], new_tasks };
+    return { images, new_tasks: [] };
   }
 
   async crawlDetail(page, task) {
@@ -111,32 +145,24 @@ class PinterestAdapter extends BaseAdapter {
         return isNaN(num) ? 0 : num;
       }
 
-      const allText = document.body.innerText || '';
-
-      const reactionBtns = document.querySelectorAll('[data-test-id="reaction-count"], [data-test-id="repin-count"], [data-test-id="save-count"]');
-      reactionBtns.forEach(el => {
-        const count = parseCount(el.textContent);
-        if (count > 0) result.like_count = Math.max(result.like_count, count);
-      });
-
       const allButtons = document.querySelectorAll('button, [role="button"]');
       for (const btn of allButtons) {
         const text = btn.textContent || '';
         const ariaLabel = btn.getAttribute('aria-label') || '';
+        const combined = (text + ' ' + ariaLabel).toLowerCase();
 
-        const saveMatch = ariaLabel.match(/(\d[\d,.]*[kmKM]?)\s*(save|保存|收藏)/i) || text.match(/(\d[\d,.]*[kmKM]?)\s*(save|保存|收藏)/i);
-        if (saveMatch) {
-          result.favorite_count = Math.max(result.favorite_count, parseCount(saveMatch[1]));
-        }
+        const nums = combined.match(/(\d[\d,.]*[kmKM]?)/g);
+        if (!nums) continue;
 
-        const likeMatch = ariaLabel.match(/(\d[\d,.]*[kmKM]?)\s*(like|react|赞|喜欢)/i) || text.match(/(\d[\d,.]*[kmKM]?)\s*(like|react|赞|喜欢)/i);
-        if (likeMatch) {
-          result.like_count = Math.max(result.like_count, parseCount(likeMatch[1]));
-        }
-
-        const commentMatch = ariaLabel.match(/(\d[\d,.]*[kmKM]?)\s*(comment|评论)/i) || text.match(/(\d[\d,.]*[kmKM]?)\s*(comment|评论)/i);
-        if (commentMatch) {
-          result.comment_count = Math.max(result.comment_count, parseCount(commentMatch[1]));
+        for (const numStr of nums) {
+          const count = parseCount(numStr);
+          if (/save|repin|收藏|保存/.test(combined)) {
+            result.favorite_count = Math.max(result.favorite_count, count);
+          } else if (/comment|评论/.test(combined)) {
+            result.comment_count = Math.max(result.comment_count, count);
+          } else if (/like|react|赞|love|喜欢/.test(combined)) {
+            result.like_count = Math.max(result.like_count, count);
+          }
         }
       }
 
@@ -146,32 +172,16 @@ class PinterestAdapter extends BaseAdapter {
         const parent = el.closest('[data-test-id]');
         const testId = parent ? parent.getAttribute('data-test-id') : '';
 
-        if (testId.includes('save') || testId.includes('repin')) {
-          const count = parseCount(text);
-          if (count > 0) result.favorite_count = Math.max(result.favorite_count, count);
-        }
-        if (testId.includes('reaction') || testId.includes('like')) {
-          const count = parseCount(text);
-          if (count > 0) result.like_count = Math.max(result.like_count, count);
-        }
-        if (testId.includes('comment')) {
-          const count = parseCount(text);
-          if (count > 0) result.comment_count = Math.max(result.comment_count, count);
-        }
-      }
-
-      const numberSpans = document.querySelectorAll('span');
-      for (const span of numberSpans) {
-        const text = span.textContent.trim();
         if (/^\d[\d,.]*[kmKM]?$/.test(text)) {
           const count = parseCount(text);
-          const nearby = span.parentElement ? span.parentElement.textContent : '';
-          if (/comment|评论/i.test(nearby)) {
-            result.comment_count = Math.max(result.comment_count, count);
-          } else if (/save|保存|收藏|repin/i.test(nearby)) {
+          if (testId.includes('save') || testId.includes('repin')) {
             result.favorite_count = Math.max(result.favorite_count, count);
-          } else if (/react|like|赞|喜欢|love/i.test(nearby)) {
+          }
+          if (testId.includes('reaction') || testId.includes('like')) {
             result.like_count = Math.max(result.like_count, count);
+          }
+          if (testId.includes('comment')) {
+            result.comment_count = Math.max(result.comment_count, count);
           }
         }
       }
@@ -198,7 +208,7 @@ class PinterestAdapter extends BaseAdapter {
       }
 
       if (!result.author_name) {
-        const authorEl = document.querySelector('[data-test-id="pin-creator-name"], [data-test-id="creator-name"], a[href*="/user/"], a[href*="/pin-creator/"]');
+        const authorEl = document.querySelector('[data-test-id="pin-creator-name"], [data-test-id="creator-name"]');
         if (authorEl) {
           result.author_name = authorEl.textContent.trim();
           result.author_url = authorEl.href || null;

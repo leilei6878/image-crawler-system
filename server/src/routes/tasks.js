@@ -23,22 +23,40 @@ function passesFilter(img, filter) {
   const checks = [];
 
   if (filter.min_like && filter.min_like > 0) {
-    checks.push((parseInt(img.like_count) || 0) >= filter.min_like);
+    const val = parseInt(img.like_count);
+    if (val && val > 0) {
+      checks.push(val >= filter.min_like);
+    }
   }
   if (filter.min_favorite && filter.min_favorite > 0) {
-    checks.push((parseInt(img.favorite_count) || 0) >= filter.min_favorite);
+    const val = parseInt(img.favorite_count);
+    if (val && val > 0) {
+      checks.push(val >= filter.min_favorite);
+    }
   }
   if (filter.min_comment && filter.min_comment > 0) {
-    checks.push((parseInt(img.comment_count) || 0) >= filter.min_comment);
+    const val = parseInt(img.comment_count);
+    if (val && val > 0) {
+      checks.push(val >= filter.min_comment);
+    }
   }
   if (filter.min_share && filter.min_share > 0) {
-    checks.push((parseInt(img.share_count) || 0) >= filter.min_share);
+    const val = parseInt(img.share_count);
+    if (val && val > 0) {
+      checks.push(val >= filter.min_share);
+    }
   }
   if (filter.min_width && filter.min_width > 0) {
-    checks.push((parseInt(img.width) || 0) >= filter.min_width);
+    const val = parseInt(img.width);
+    if (val && val > 0) {
+      checks.push(val >= filter.min_width);
+    }
   }
   if (filter.min_height && filter.min_height > 0) {
-    checks.push((parseInt(img.height) || 0) >= filter.min_height);
+    const val = parseInt(img.height);
+    if (val && val > 0) {
+      checks.push(val >= filter.min_height);
+    }
   }
 
   if (checks.length === 0) return true;

@@ -3,6 +3,37 @@ const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
 
+function passesFilter(img, filter) {
+  const mode = filter.logic_mode || 'and';
+  const checks = [];
+
+  if (filter.min_like && filter.min_like > 0) {
+    checks.push((parseInt(img.like_count) || 0) >= filter.min_like);
+  }
+  if (filter.min_favorite && filter.min_favorite > 0) {
+    checks.push((parseInt(img.favorite_count) || 0) >= filter.min_favorite);
+  }
+  if (filter.min_comment && filter.min_comment > 0) {
+    checks.push((parseInt(img.comment_count) || 0) >= filter.min_comment);
+  }
+  if (filter.min_share && filter.min_share > 0) {
+    checks.push((parseInt(img.share_count) || 0) >= filter.min_share);
+  }
+  if (filter.min_width && filter.min_width > 0) {
+    checks.push((parseInt(img.width) || 0) >= filter.min_width);
+  }
+  if (filter.min_height && filter.min_height > 0) {
+    checks.push((parseInt(img.height) || 0) >= filter.min_height);
+  }
+
+  if (checks.length === 0) return true;
+
+  if (mode === 'or') {
+    return checks.some(c => c);
+  }
+  return checks.every(c => c);
+}
+
 // Worker拉取任务
 router.post('/pull', async (req, res) => {
   const conn = await db.getConnection();
@@ -129,8 +160,17 @@ router.post('/report', async (req, res) => {
         [page_task_id]
       );
 
-      // 批量插入图片
+      const [filterRows] = await conn.execute('SELECT * FROM job_filters WHERE job_id = ?', [task.job_id]);
+      const filter = filterRows.length > 0 ? filterRows[0] : null;
+
+      let savedCount = 0;
+      let filteredCount = 0;
       for (const img of images) {
+        if (filter && !passesFilter(img, filter)) {
+          filteredCount++;
+          continue;
+        }
+
         await conn.execute(
           `INSERT INTO images (job_id, host_id, page_task_id, image_url, detail_page_url, source_page_url,
             author_name, author_url, width, height, like_count, favorite_count, comment_count, share_count)
@@ -143,6 +183,11 @@ router.post('/report', async (req, res) => {
            img.like_count || null, img.favorite_count || null,
            img.comment_count || null, img.share_count || null]
         );
+        savedCount++;
+      }
+
+      if (filteredCount > 0) {
+        console.log(`[Filter] Job#${task.job_id} Task#${page_task_id}: 保存${savedCount}张, 过滤${filteredCount}张`);
       }
 
       // 创建新的子任务

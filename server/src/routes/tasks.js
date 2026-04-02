@@ -214,18 +214,8 @@ router.post('/report', async (req, res) => {
         [page_task_id]
       );
 
-      const [filterRows] = await conn.execute('SELECT * FROM job_filters WHERE job_id = ?', [task.job_id]);
-      const filter = filterRows.length > 0 ? filterRows[0] : null;
-      console.log(`[Filter] Job#${task.job_id} 筛选规则:`, filter ? JSON.stringify({ logic_mode: filter.logic_mode, min_like: filter.min_like, min_favorite: filter.min_favorite, exclude_video: filter.exclude_video, exclude_collage: filter.exclude_collage }) : '无');
-
       let savedCount = 0;
-      let filteredCount = 0;
       for (const img of images) {
-        if (filter && !passesFilter(img, filter)) {
-          console.log(`[Filter] 过滤掉: like=${img.like_count} url=${(img.image_url||'').substring(0,60)}`);
-          filteredCount++;
-          continue;
-        }
 
         await conn.execute(
           `INSERT INTO images (job_id, host_id, page_task_id, image_url, detail_page_url, source_page_url,
@@ -242,9 +232,7 @@ router.post('/report', async (req, res) => {
         savedCount++;
       }
 
-      if (filteredCount > 0) {
-        console.log(`[Filter] Job#${task.job_id} Task#${page_task_id}: 保存${savedCount}张, 过滤${filteredCount}张`);
-      }
+      console.log(`[Report] Job#${task.job_id} Task#${page_task_id}: 收到${images.length}张, 保存${savedCount}张`);
 
       // 创建新的子任务
       for (const newTask of new_page_tasks) {

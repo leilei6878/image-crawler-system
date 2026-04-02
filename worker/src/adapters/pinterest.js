@@ -8,8 +8,10 @@ class PinterestAdapter extends BaseAdapter {
   async crawl(page, task) {
     const timeout = (task.page_timeout_seconds || 60) * 1000;
 
+    console.log(`[Pinterest] 开始采集: ${task.target_url} (type=${task.task_type})`);
+
     await page.goto(task.target_url, {
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'networkidle',
       timeout
     });
 
@@ -17,16 +19,20 @@ class PinterestAdapter extends BaseAdapter {
     const isDetailUrl = /\/pin\/\d+/i.test(url);
 
     if (task.task_type === 'detail' || isDetailUrl) {
+      console.log(`[Pinterest] 识别为详情页，使用详情页逻辑`);
       return this.crawlDetail(page, task);
     }
 
+    console.log(`[Pinterest] 识别为列表页，使用列表页逻辑`);
     return this.crawlListing(page, task);
   }
 
   async crawlListing(page, task) {
     try {
       await page.waitForSelector('[data-test-id="pin"], [role="listitem"]', { timeout: 15000 });
-    } catch {}
+    } catch {
+      console.log(`[Pinterest] 列表页未找到pin元素`);
+    }
 
     if (task.auto_scroll_seconds > 0) {
       await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
@@ -93,16 +99,29 @@ class PinterestAdapter extends BaseAdapter {
       }).filter(p => p.image_url && p.image_url.startsWith('http'));
     });
 
+    console.log(`[Pinterest] 列表页提取到 ${rawPins.length} 张图片`);
     const images = rawPins.map(p => this.normalizeImage(p));
     return { images, new_tasks: [] };
   }
 
   async crawlDetail(page, task) {
-    try {
-      await page.waitForSelector('img[src*="pinimg.com"]', { timeout: 15000 });
-    } catch {}
+    console.log(`[Pinterest] 等待详情页加载...`);
 
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
+
+    const pageInfo = await page.evaluate(() => {
+      return {
+        title: document.title,
+        url: window.location.href,
+        allImgCount: document.querySelectorAll('img').length,
+        pinimgCount: document.querySelectorAll('img[src*="pinimg.com"]').length,
+        allImgSrcs: Array.from(document.querySelectorAll('img')).slice(0, 10).map(i => i.src.substring(0, 80)),
+        bodyText: document.body ? document.body.innerText.substring(0, 500) : 'no body',
+      };
+    });
+    console.log(`[Pinterest] 页面信息: title="${pageInfo.title}" url=${pageInfo.url}`);
+    console.log(`[Pinterest] 图片数量: 全部img=${pageInfo.allImgCount} pinimg=${pageInfo.pinimgCount}`);
+    console.log(`[Pinterest] 前10个img src:`, pageInfo.allImgSrcs);
 
     const pinData = await page.evaluate(() => {
       const result = {
@@ -117,18 +136,41 @@ class PinterestAdapter extends BaseAdapter {
         favorite_count: 0,
         comment_count: 0,
         share_count: 0,
+        _debug: {},
       };
 
-      const images = Array.from(document.querySelectorAll('img[src*="pinimg.com"]'));
+      const allImages = Array.from(document.querySelectorAll('img'));
       let bestImg = null;
       let maxArea = 0;
-      for (const img of images) {
-        const area = (img.naturalWidth || img.width || 0) * (img.naturalHeight || img.height || 0);
+
+      for (const img of allImages) {
+        const src = img.src || '';
+        if (!src.includes('pinimg.com')) continue;
+        if (src.includes('75x75') || src.includes('30x30') || src.includes('140x140')) continue;
+
+        const w = img.naturalWidth || img.width || 0;
+        const h = img.naturalHeight || img.height || 0;
+        const area = w * h;
         if (area > maxArea) {
           maxArea = area;
           bestImg = img;
         }
       }
+
+      if (!bestImg && allImages.length > 0) {
+        for (const img of allImages) {
+          const src = img.src || '';
+          if (!src || src.startsWith('data:')) continue;
+          const w = img.naturalWidth || img.width || 0;
+          const h = img.naturalHeight || img.height || 0;
+          const area = w * h;
+          if (area > maxArea) {
+            maxArea = area;
+            bestImg = img;
+          }
+        }
+      }
+
       if (bestImg) {
         let src = bestImg.src || '';
         if (src.includes('236x')) src = src.replace('236x', 'originals');
@@ -137,6 +179,8 @@ class PinterestAdapter extends BaseAdapter {
         result.image_url = src;
         result.width = bestImg.naturalWidth || null;
         result.height = bestImg.naturalHeight || null;
+        result._debug.bestImgSrc = src.substring(0, 100);
+        result._debug.bestImgSize = `${bestImg.naturalWidth}x${bestImg.naturalHeight}`;
       }
 
       function parseCount(text) {
@@ -221,11 +265,20 @@ class PinterestAdapter extends BaseAdapter {
       return result;
     });
 
+    console.log(`[Pinterest] 详情页提取结果: image_url=${pinData.image_url ? pinData.image_url.substring(0, 60) + '...' : 'NULL'}`);
+    console.log(`[Pinterest] 数据: like=${pinData.like_count} fav=${pinData.favorite_count} comment=${pinData.comment_count}`);
+    if (pinData._debug) {
+      console.log(`[Pinterest] 调试: bestImg=${pinData._debug.bestImgSrc || 'none'} size=${pinData._debug.bestImgSize || 'none'}`);
+    }
+
     if (!pinData.image_url) {
+      console.log(`[Pinterest] 未找到图片，返回空结果`);
       return { images: [], new_tasks: [] };
     }
 
+    delete pinData._debug;
     const images = [this.normalizeImage(pinData)];
+    console.log(`[Pinterest] 成功提取 1 张图片`);
     return { images, new_tasks: [] };
   }
 }

@@ -5,6 +5,21 @@ const logger = require('../services/logger');
 
 function passesFilter(img, filter) {
   const mode = filter.logic_mode || 'and';
+
+  if (filter.exclude_video) {
+    const url = (img.image_url || '').toLowerCase();
+    if (url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.mov') || url.includes('video')) {
+      return false;
+    }
+  }
+
+  if (filter.exclude_collage) {
+    const url = (img.image_url || '').toLowerCase();
+    if (url.includes('collage') || url.includes('grid')) {
+      return false;
+    }
+  }
+
   const checks = [];
 
   if (filter.min_like && filter.min_like > 0) {
@@ -162,11 +177,13 @@ router.post('/report', async (req, res) => {
 
       const [filterRows] = await conn.execute('SELECT * FROM job_filters WHERE job_id = ?', [task.job_id]);
       const filter = filterRows.length > 0 ? filterRows[0] : null;
+      console.log(`[Filter] Job#${task.job_id} 筛选规则:`, filter ? JSON.stringify({ logic_mode: filter.logic_mode, min_like: filter.min_like, min_favorite: filter.min_favorite, exclude_video: filter.exclude_video, exclude_collage: filter.exclude_collage }) : '无');
 
       let savedCount = 0;
       let filteredCount = 0;
       for (const img of images) {
         if (filter && !passesFilter(img, filter)) {
+          console.log(`[Filter] 过滤掉: like=${img.like_count} url=${(img.image_url||'').substring(0,60)}`);
           filteredCount++;
           continue;
         }

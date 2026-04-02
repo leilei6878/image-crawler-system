@@ -17,8 +17,26 @@ class PinterestAdapter extends BaseAdapter {
       try {
         if (fs.existsSync(cookiePath)) {
           const raw = fs.readFileSync(cookiePath, 'utf8');
-          const cookies = JSON.parse(raw);
+          let cookies = JSON.parse(raw);
           if (Array.isArray(cookies) && cookies.length > 0) {
+            cookies = cookies.map(c => {
+              const cleaned = {
+                name: c.name,
+                value: c.value,
+                domain: c.domain,
+                path: c.path || '/',
+              };
+              if (c.expires && c.expires > 0) cleaned.expires = c.expires;
+              else if (c.expirationDate && c.expirationDate > 0) cleaned.expires = c.expirationDate;
+              if (c.httpOnly !== undefined) cleaned.httpOnly = !!c.httpOnly;
+              if (c.secure !== undefined) cleaned.secure = !!c.secure;
+              const ss = (c.sameSite || '').toString();
+              if (/^strict$/i.test(ss)) cleaned.sameSite = 'Strict';
+              else if (/^lax$/i.test(ss)) cleaned.sameSite = 'Lax';
+              else if (/^none$/i.test(ss) || /^no_restriction$/i.test(ss)) cleaned.sameSite = 'None';
+              else cleaned.sameSite = 'Lax';
+              return cleaned;
+            }).filter(c => c.name && c.value && c.domain);
             await context.addCookies(cookies);
             console.log(`[Pinterest] 已加载Cookie: ${cookiePath} (${cookies.length}条)`);
             return true;

@@ -1,8 +1,35 @@
 const BaseAdapter = require('./base');
+const fs = require('fs');
+const path = require('path');
 
 class PinterestAdapter extends BaseAdapter {
   constructor() {
     super('pinterest');
+  }
+
+  async loadCookies(context) {
+    const cookiePaths = [
+      path.join(process.cwd(), 'cookies', 'pinterest.json'),
+      path.join(process.cwd(), 'pinterest_cookies.json'),
+    ];
+
+    for (const cookiePath of cookiePaths) {
+      try {
+        if (fs.existsSync(cookiePath)) {
+          const raw = fs.readFileSync(cookiePath, 'utf8');
+          const cookies = JSON.parse(raw);
+          if (Array.isArray(cookies) && cookies.length > 0) {
+            await context.addCookies(cookies);
+            console.log(`[Pinterest] 已加载Cookie: ${cookiePath} (${cookies.length}条)`);
+            return true;
+          }
+        }
+      } catch (err) {
+        console.log(`[Pinterest] 加载Cookie失败: ${cookiePath} - ${err.message}`);
+      }
+    }
+    console.log(`[Pinterest] 未找到Cookie文件，以游客模式采集`);
+    return false;
   }
 
   async crawl(page, task) {
@@ -10,10 +37,14 @@ class PinterestAdapter extends BaseAdapter {
 
     console.log(`[Pinterest] 开始采集: ${task.target_url} (type=${task.task_type})`);
 
+    await this.loadCookies(page.context());
+
     await page.goto(task.target_url, {
-      waitUntil: 'networkidle',
+      waitUntil: 'domcontentloaded',
       timeout
     });
+
+    await page.waitForTimeout(5000);
 
     const url = task.target_url || '';
     const isDetailUrl = /\/pin\/\d+/i.test(url);
@@ -29,7 +60,7 @@ class PinterestAdapter extends BaseAdapter {
 
   async crawlListing(page, task) {
     try {
-      await page.waitForSelector('[data-test-id="pin"], [role="listitem"]', { timeout: 15000 });
+      await page.waitForSelector('[data-test-id="pin"], [role="listitem"], img[src*="pinimg.com"]', { timeout: 15000 });
     } catch {
       console.log(`[Pinterest] 列表页未找到pin元素`);
     }
@@ -105,9 +136,18 @@ class PinterestAdapter extends BaseAdapter {
   }
 
   async crawlDetail(page, task) {
-    console.log(`[Pinterest] 等待详情页加载...`);
+    console.log(`[Pinterest] 等待详情页内容加载...`);
 
-    await page.waitForTimeout(3000);
+    try {
+      await page.waitForSelector('img[src*="pinimg.com"]', { timeout: 15000 });
+    } catch {
+      console.log(`[Pinterest] 未检测到pinimg图片，尝试等待任意图片...`);
+      try {
+        await page.waitForSelector('img', { timeout: 5000 });
+      } catch {}
+    }
+
+    await page.waitForTimeout(2000);
 
     const pageInfo = await page.evaluate(() => {
       return {
@@ -115,13 +155,9 @@ class PinterestAdapter extends BaseAdapter {
         url: window.location.href,
         allImgCount: document.querySelectorAll('img').length,
         pinimgCount: document.querySelectorAll('img[src*="pinimg.com"]').length,
-        allImgSrcs: Array.from(document.querySelectorAll('img')).slice(0, 10).map(i => i.src.substring(0, 80)),
-        bodyText: document.body ? document.body.innerText.substring(0, 500) : 'no body',
       };
     });
-    console.log(`[Pinterest] 页面信息: title="${pageInfo.title}" url=${pageInfo.url}`);
-    console.log(`[Pinterest] 图片数量: 全部img=${pageInfo.allImgCount} pinimg=${pageInfo.pinimgCount}`);
-    console.log(`[Pinterest] 前10个img src:`, pageInfo.allImgSrcs);
+    console.log(`[Pinterest] 页面: title="${pageInfo.title.substring(0, 60)}" img总数=${pageInfo.allImgCount} pinimg=${pageInfo.pinimgCount}`);
 
     const pinData = await page.evaluate(() => {
       const result = {
@@ -136,7 +172,6 @@ class PinterestAdapter extends BaseAdapter {
         favorite_count: 0,
         comment_count: 0,
         share_count: 0,
-        _debug: {},
       };
 
       const allImages = Array.from(document.querySelectorAll('img'));
@@ -157,7 +192,7 @@ class PinterestAdapter extends BaseAdapter {
         }
       }
 
-      if (!bestImg && allImages.length > 0) {
+      if (!bestImg) {
         for (const img of allImages) {
           const src = img.src || '';
           if (!src || src.startsWith('data:')) continue;
@@ -179,8 +214,6 @@ class PinterestAdapter extends BaseAdapter {
         result.image_url = src;
         result.width = bestImg.naturalWidth || null;
         result.height = bestImg.naturalHeight || null;
-        result._debug.bestImgSrc = src.substring(0, 100);
-        result._debug.bestImgSize = `${bestImg.naturalWidth}x${bestImg.naturalHeight}`;
       }
 
       function parseCount(text) {
@@ -190,6 +223,28 @@ class PinterestAdapter extends BaseAdapter {
         if (text.includes('m')) return Math.round(parseFloat(text) * 1000000);
         const num = parseInt(text);
         return isNaN(num) ? 0 : num;
+      }
+
+      const scriptTags = document.querySelectorAll('script[type="application/ld+json"]');
+      for (const script of scriptTags) {
+        try {
+          const data = JSON.parse(script.textContent);
+          if (data.interactionStatistic) {
+            const stats = Array.isArray(data.interactionStatistic) ? data.interactionStatistic : [data.interactionStatistic];
+            for (const stat of stats) {
+              const typeUrl = stat.interactionType || '';
+              const typeName = typeof typeUrl === 'string' ? typeUrl : (typeUrl['@type'] || '');
+              const count = parseInt(stat.userInteractionCount) || 0;
+              if (/like/i.test(typeName)) result.like_count = Math.max(result.like_count, count);
+              if (/save|pin|bookmark/i.test(typeName)) result.favorite_count = Math.max(result.favorite_count, count);
+              if (/comment/i.test(typeName)) result.comment_count = Math.max(result.comment_count, count);
+            }
+          }
+          if (data.author) {
+            result.author_name = data.author.name || null;
+            result.author_url = data.author.url || null;
+          }
+        } catch {}
       }
 
       const allButtons = document.querySelectorAll('button, [role="button"]');
@@ -203,6 +258,7 @@ class PinterestAdapter extends BaseAdapter {
 
         for (const numStr of nums) {
           const count = parseCount(numStr);
+          if (count > 10000000) continue;
           if (/save|repin|收藏|保存/.test(combined)) {
             result.favorite_count = Math.max(result.favorite_count, count);
           } else if (/comment|评论/.test(combined)) {
@@ -211,47 +267,6 @@ class PinterestAdapter extends BaseAdapter {
             result.like_count = Math.max(result.like_count, count);
           }
         }
-      }
-
-      const countElements = document.querySelectorAll('[data-test-id] span, [class*="count"], [class*="Count"]');
-      for (const el of countElements) {
-        const text = el.textContent.trim();
-        const parent = el.closest('[data-test-id]');
-        const testId = parent ? parent.getAttribute('data-test-id') : '';
-
-        if (/^\d[\d,.]*[kmKM]?$/.test(text)) {
-          const count = parseCount(text);
-          if (testId.includes('save') || testId.includes('repin')) {
-            result.favorite_count = Math.max(result.favorite_count, count);
-          }
-          if (testId.includes('reaction') || testId.includes('like')) {
-            result.like_count = Math.max(result.like_count, count);
-          }
-          if (testId.includes('comment')) {
-            result.comment_count = Math.max(result.comment_count, count);
-          }
-        }
-      }
-
-      const scriptTags = document.querySelectorAll('script[type="application/ld+json"]');
-      for (const script of scriptTags) {
-        try {
-          const data = JSON.parse(script.textContent);
-          if (data.interactionStatistic) {
-            const stats = Array.isArray(data.interactionStatistic) ? data.interactionStatistic : [data.interactionStatistic];
-            for (const stat of stats) {
-              const type = (stat.interactionType || '').toLowerCase();
-              const count = parseInt(stat.userInteractionCount) || 0;
-              if (type.includes('like')) result.like_count = Math.max(result.like_count, count);
-              if (type.includes('save') || type.includes('pin')) result.favorite_count = Math.max(result.favorite_count, count);
-              if (type.includes('comment')) result.comment_count = Math.max(result.comment_count, count);
-            }
-          }
-          if (data.author) {
-            result.author_name = data.author.name || null;
-            result.author_url = data.author.url || null;
-          }
-        } catch {}
       }
 
       if (!result.author_name) {
@@ -265,18 +280,13 @@ class PinterestAdapter extends BaseAdapter {
       return result;
     });
 
-    console.log(`[Pinterest] 详情页提取结果: image_url=${pinData.image_url ? pinData.image_url.substring(0, 60) + '...' : 'NULL'}`);
-    console.log(`[Pinterest] 数据: like=${pinData.like_count} fav=${pinData.favorite_count} comment=${pinData.comment_count}`);
-    if (pinData._debug) {
-      console.log(`[Pinterest] 调试: bestImg=${pinData._debug.bestImgSrc || 'none'} size=${pinData._debug.bestImgSize || 'none'}`);
-    }
+    console.log(`[Pinterest] 提取结果: image=${pinData.image_url ? 'YES' : 'NULL'} like=${pinData.like_count} fav=${pinData.favorite_count} comment=${pinData.comment_count} author=${pinData.author_name || 'unknown'}`);
 
     if (!pinData.image_url) {
       console.log(`[Pinterest] 未找到图片，返回空结果`);
       return { images: [], new_tasks: [] };
     }
 
-    delete pinData._debug;
     const images = [this.normalizeImage(pinData)];
     console.log(`[Pinterest] 成功提取 1 张图片`);
     return { images, new_tasks: [] };

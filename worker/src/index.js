@@ -86,7 +86,7 @@ async function executeTask(pool, task) {
       const filtered = [];
       const passed = [];
       for (const img of images) {
-        if (passesFilter(img, task.filters)) {
+        if (passesFilter(img, task.filters, task.site_type)) {
           passed.push(img);
         } else {
           filtered.push(img);

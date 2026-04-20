@@ -11,7 +11,11 @@ class BaseAdapter {
     const totalMs = Math.max(0, Number(seconds || 0) * 1000);
     const totalRounds = Math.max(0, Number(maxRounds || 0));
     if (totalMs <= 0 || totalRounds <= 0) {
-      return;
+      return {
+        executedRounds: 0,
+        changedRounds: 0,
+        stoppedReason: 'disabled',
+      };
     }
 
     const intervalMs = Math.max(1200, Math.floor(totalMs / totalRounds));
@@ -19,9 +23,17 @@ class BaseAdapter {
 
     let lastHeight = await page.evaluate(() => document.body.scrollHeight);
     let noChangeCount = 0;
+    let executedRounds = 0;
+    let changedRounds = 0;
+    let stoppedReason = 'completed';
 
     for (let round = 0; round < totalRounds; round++) {
-      if (Date.now() >= deadline) break;
+      if (Date.now() >= deadline) {
+        stoppedReason = 'deadline_reached';
+        break;
+      }
+
+      executedRounds++;
 
       await page.evaluate(() => {
         const nextY = window.scrollY + Math.max(window.innerHeight * 0.9, 1200);
@@ -33,12 +45,23 @@ class BaseAdapter {
       const newHeight = await page.evaluate(() => document.body.scrollHeight);
       if (newHeight === lastHeight) {
         noChangeCount++;
-        if (noChangeCount >= 5) break;
+        if (noChangeCount >= 5) {
+          stoppedReason = 'height_stable';
+          break;
+        }
       } else {
         noChangeCount = 0;
+        changedRounds++;
       }
       lastHeight = newHeight;
     }
+
+    return {
+      executedRounds,
+      changedRounds,
+      stoppedReason,
+      finalHeight: lastHeight,
+    };
   }
 
   normalizeImage(raw) {

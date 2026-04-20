@@ -436,9 +436,15 @@ class PinterestAdapter extends BaseAdapter {
     const beforeScrollCount = await page.evaluate(() => document.querySelectorAll('img[src*="pinimg.com"]').length);
     console.log(`[Pinterest] images before scroll: ${beforeScrollCount}`);
 
+    let scrollStats = null;
     if (task.auto_scroll_seconds > 0) {
       console.log(`[Pinterest] auto scroll detail page: ${task.auto_scroll_seconds}s / max ${task.auto_scroll_max_rounds || 10} rounds`);
-      await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
+      scrollStats = await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
+      if (scrollStats) {
+        console.log(
+          `[Pinterest] scroll detail result: rounds=${scrollStats.executedRounds}/${task.auto_scroll_max_rounds || 10} changed=${scrollStats.changedRounds} stop=${scrollStats.stoppedReason} finalHeight=${scrollStats.finalHeight || 0}`
+        );
+      }
     }
 
     const afterScrollCount = await page.evaluate(() => document.querySelectorAll('img[src*="pinimg.com"]').length);

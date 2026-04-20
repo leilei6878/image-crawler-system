@@ -77,6 +77,10 @@ export default function JobDetail({ showToast }) {
   if (!data) return <div className="empty">加载失败</div>;
 
   const { job, filters, images, img_total, page_tasks, task_stats } = data;
+  const formatMetric = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? num : 0;
+  };
 
   return (
     <div>
@@ -211,9 +215,12 @@ export default function JobDetail({ showToast }) {
                         {img.author_name && <div style={{ fontWeight: 500 }}>{img.author_name}</div>}
                         <div>
                           {img.width && img.height && `${img.width}x${img.height}`}
-                          {img.like_count != null && ` ♥点赞:${img.like_count}`}
-                          {img.favorite_count != null && ` ★收藏:${img.favorite_count}`}
-                          {img.comment_count != null && ` 评论:${img.comment_count}`}
+                        </div>
+                        <div style={{ marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-muted)' }}>
+                          <span>点赞: {formatMetric(img.like_count)}</span>
+                          <span>收藏: {formatMetric(img.favorite_count)}</span>
+                          <span>评论: {formatMetric(img.comment_count)}</span>
+                          <span>分享: {formatMetric(img.share_count)}</span>
                         </div>
                         <div style={{ marginTop: 2 }}>
                           <span className={`status-tag status-${img.expand_status}`} style={{ fontSize: 11 }}>

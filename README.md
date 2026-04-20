@@ -111,4 +111,5 @@ python -m pytest
 
 - `docs/PROJECT_CONTEXT.md` 记录当前项目背景、边界和架构假设。
 - `docs/TODO.md` 跟踪后续工程任务。
+- `docs/WORKER_DEPLOYMENT.md` 说明被控端 Worker 的一键安装、配置和安装状态监测。
 - `AGENTS.md` 定义 AI coding agent 的协作规则。

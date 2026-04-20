@@ -9,6 +9,131 @@ class PinterestAdapter extends BaseAdapter {
     super('pinterest');
   }
 
+  attachPinResponseCollector(page) {
+    const collector = new Map();
+
+    const visit = (value) => {
+      if (!value || typeof value !== 'object') return;
+
+      if (Array.isArray(value)) {
+        for (const item of value) visit(item);
+        return;
+      }
+
+      const imageUrl =
+        (value.images_orig && value.images_orig.url) ||
+        value.imageLargeUrl ||
+        (value.images_736x && value.images_736x.url) ||
+        (value.images_564x && value.images_564x.url) ||
+        (value.images_474x && value.images_474x.url) ||
+        (value.images_236x && value.images_236x.url) ||
+        (value.images_170x && value.images_170x.url) ||
+        null;
+
+      const entityId = value.entityId || value.id || null;
+      if (entityId && imageUrl) {
+        const detailPageUrl = value.seoUrl
+          ? `https://www.pinterest.com${value.seoUrl.startsWith('/') ? '' : '/'}${value.seoUrl}`
+          : (value.link || null);
+
+        collector.set(String(entityId), {
+          entityId: String(entityId),
+          image_url: imageUrl,
+          detail_page_url: detailPageUrl,
+          source_page_url: null,
+          author_name:
+            (value.closeupAttribution && value.closeupAttribution.fullName) ||
+            (value.nativeCreator && value.nativeCreator.fullName) ||
+            (value.pinner && value.pinner.username) ||
+            null,
+          author_url:
+            value.pinner && value.pinner.username
+              ? `https://www.pinterest.com/${value.pinner.username}/`
+              : null,
+          width:
+            (value.images_orig && value.images_orig.width) ||
+            (value.images_736x && value.images_736x.width) ||
+            (value.images_564x && value.images_564x.width) ||
+            (value.images_474x && value.images_474x.width) ||
+            (value.images_236x && value.images_236x.width) ||
+            null,
+          height:
+            (value.images_orig && value.images_orig.height) ||
+            (value.images_736x && value.images_736x.height) ||
+            (value.images_564x && value.images_564x.height) ||
+            (value.images_474x && value.images_474x.height) ||
+            (value.images_236x && value.images_236x.height) ||
+            null,
+          like_count: value.likeCount || value.likesCount || 0,
+          favorite_count:
+            value.aggregatedPinData &&
+            value.aggregatedPinData.aggregatedStats &&
+            value.aggregatedPinData.aggregatedStats.saves
+              ? value.aggregatedPinData.aggregatedStats.saves
+              : (value.repinCount || 0),
+          comment_count: value.commentCount || value.commentsCount || 0,
+          share_count: value.shareCount || value.sharesCount || 0,
+        });
+      }
+
+      for (const nested of Object.values(value)) visit(nested);
+    };
+
+    const onResponse = async (response) => {
+      try {
+        const url = response.url();
+        const contentType = response.headers()['content-type'] || '';
+        if (!contentType.includes('application/json') && !/graphql|resource|pin/i.test(url)) {
+          return;
+        }
+
+        const payload = await response.json().catch(() => null);
+        if (!payload) return;
+        visit(payload);
+      } catch {}
+    };
+
+    page.on('response', onResponse);
+    return collector;
+  }
+
+  mergePins(...groups) {
+    const merged = new Map();
+
+    for (const group of groups) {
+      for (const pin of group || []) {
+        if (!pin || !pin.image_url) continue;
+        const key = pin.detail_page_url || pin.image_url;
+        const existing = merged.get(key) || {};
+        merged.set(key, {
+          ...existing,
+          ...pin,
+          image_url: pin.image_url || existing.image_url,
+          detail_page_url: pin.detail_page_url || existing.detail_page_url || null,
+          source_page_url: pin.source_page_url || existing.source_page_url || null,
+          author_name: pin.author_name || existing.author_name || null,
+          author_url: pin.author_url || existing.author_url || null,
+          width: pin.width ?? existing.width ?? null,
+          height: pin.height ?? existing.height ?? null,
+          like_count: pin.like_count ?? existing.like_count ?? null,
+          favorite_count: pin.favorite_count ?? existing.favorite_count ?? null,
+          comment_count: pin.comment_count ?? existing.comment_count ?? null,
+          share_count: pin.share_count ?? existing.share_count ?? null,
+        });
+      }
+    }
+
+    return Array.from(merged.values());
+  }
+
+  isUsefulImage(pin) {
+    const url = String((pin && pin.image_url) || '').toLowerCase();
+    if (!url) return false;
+    if (url.includes('avatar') || url.includes('/user/')) return false;
+    if (url.includes('140x140_rs') || url.includes('75x75') || url.includes('60x60') || url.includes('30x30')) return false;
+    return true;
+  }
+
   getAuthFileCandidates() {
     const cookiePaths = [
       process.env.PINTEREST_COOKIE_PATH,
@@ -130,6 +255,7 @@ class PinterestAdapter extends BaseAdapter {
 
   async crawl(page, task) {
     const timeout = (task.page_timeout_seconds || 60) * 1000;
+    const pinCollector = this.attachPinResponseCollector(page);
 
     console.log(`[Pinterest] start crawl: ${task.target_url} (type=${task.task_type})`);
 
@@ -148,14 +274,14 @@ class PinterestAdapter extends BaseAdapter {
 
     if (task.task_type === 'detail' || isDetailUrl) {
       console.log('[Pinterest] detected detail pin page');
-      return this.crawlDetail(page, task);
+      return this.crawlDetail(page, task, pinCollector);
     }
 
     console.log('[Pinterest] detected listing page');
-    return this.crawlListing(page, task);
+    return this.crawlListing(page, task, pinCollector);
   }
 
-  async crawlListing(page, task) {
+  async crawlListing(page, task, pinCollector) {
     try {
       await page.waitForSelector('[data-test-id="pin"], [role="listitem"], img[src*="pinimg.com"]', { timeout: 15000 });
     } catch {
@@ -167,14 +293,14 @@ class PinterestAdapter extends BaseAdapter {
       await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
     }
 
-    const rawPins = await this.extractAllPins(page);
+    const rawPins = this.mergePins(await this.extractAllPins(page), Array.from((pinCollector || new Map()).values()));
     console.log(`[Pinterest] listing page extracted images: ${rawPins.length}`);
 
     const images = rawPins.map(pin => this.normalizeImage(pin));
     return { images, new_tasks: [] };
   }
 
-  async crawlDetail(page, task) {
+  async crawlDetail(page, task, pinCollector) {
     console.log('[Pinterest] waiting for detail content');
 
     try {
@@ -197,12 +323,20 @@ class PinterestAdapter extends BaseAdapter {
     console.log(`[Pinterest] images after scroll: ${afterScrollCount}`);
 
     const primaryPin = await this.extractPrimaryPin(page, task);
+    const pagePins = await this.extractAllPins(page);
+    const networkPins = Array.from((pinCollector || new Map()).values()).map(pin => ({
+      ...pin,
+      source_page_url: page.url(),
+    }));
+    const mergedPins = this.mergePins(primaryPin ? [primaryPin] : [], pagePins, networkPins)
+      .filter(pin => this.isUsefulImage(pin));
+
     if (primaryPin) {
       console.log(`[Pinterest] detail metrics: like=${primaryPin.like_count || 0} fav=${primaryPin.favorite_count || 0} comment=${primaryPin.comment_count || 0} share=${primaryPin.share_count || 0}`);
     }
-    console.log(`[Pinterest] primary image extracted: ${primaryPin ? 1 : 0}; auto expansion disabled`);
+    console.log(`[Pinterest] detail page extracted images: ${mergedPins.length}; auto expansion disabled`);
 
-    const images = primaryPin ? [this.normalizeImage(primaryPin)] : [];
+    const images = mergedPins.map(pin => this.normalizeImage(pin));
     return { images, new_tasks: [] };
   }
 

@@ -37,7 +37,7 @@ class PinterestAdapter extends BaseAdapter {
           : (value.link || null);
 
         collector.set(String(entityId), {
-          entityId: String(entityId),
+          entity_id: String(entityId),
           image_url: imageUrl,
           detail_page_url: detailPageUrl,
           source_page_url: null,
@@ -108,6 +108,7 @@ class PinterestAdapter extends BaseAdapter {
         merged.set(key, {
           ...existing,
           ...pin,
+          entity_id: pin.entity_id || existing.entity_id || null,
           image_url: pin.image_url || existing.image_url,
           detail_page_url: pin.detail_page_url || existing.detail_page_url || null,
           source_page_url: pin.source_page_url || existing.source_page_url || null,
@@ -132,6 +133,127 @@ class PinterestAdapter extends BaseAdapter {
     if (url.includes('avatar') || url.includes('/user/')) return false;
     if (url.includes('140x140_rs') || url.includes('75x75') || url.includes('60x60') || url.includes('30x30')) return false;
     return true;
+  }
+
+  async enrichPinsWithMetrics(page, pins, task) {
+    const pinIds = [];
+    const seen = new Set();
+    const currentPinId = String(task.target_url || '').match(/\/pin\/(\d+)/i)?.[1] || null;
+
+    for (const pin of pins) {
+      const pinId = pin.entity_id || String(pin.detail_page_url || '').match(/\/pin\/(\d+)/i)?.[1] || null;
+      if (!pinId) continue;
+      if (pinId === currentPinId) continue;
+      if (seen.has(pinId)) continue;
+      seen.add(pinId);
+
+      const likeCount = Number(pin.like_count || 0);
+      const favoriteCount = Number(pin.favorite_count || 0);
+      const commentCount = Number(pin.comment_count || 0);
+      const shareCount = Number(pin.share_count || 0);
+      if (likeCount > 0 || favoriteCount > 0 || commentCount > 0 || shareCount > 0) {
+        continue;
+      }
+
+      pinIds.push(pinId);
+    }
+
+    if (pinIds.length === 0) {
+      return pins;
+    }
+
+    const fetchedMetrics = await page.evaluate(async ({ currentPath, pinIds }) => {
+      const csrftokenMatch = document.cookie.match(/csrftoken=([^;]+)/);
+      const csrftoken = csrftokenMatch ? csrftokenMatch[1] : '';
+      const isAuth = document.cookie.includes('_auth=1') || document.cookie.includes('_pinterest_sess=');
+
+      async function fetchPin(pinId) {
+        const response = await fetch('/_/graphql/', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json',
+            'x-requested-with': 'XMLHttpRequest',
+            'x-pinterest-appstate': 'active',
+            'x-csrftoken': csrftoken,
+            'x-pinterest-source-url': currentPath,
+            'x-pinterest-pws-handler': 'www/pin/[id].js',
+            'x-pinterest-graphql-name': 'CloseupDetailQuery',
+          },
+          body: JSON.stringify({
+            queryHash: '150d7ad20b86e5c38458058c4713cfbbab4e65339af4caab2eefb8ad7a6ab367',
+            variables: {
+              pinId,
+              isAuth,
+              isDesktop: true,
+              shouldPrefetchStoryPinFragment: false,
+              shouldSkipImageViewerOnPageQuery: false,
+              isUnauth: !isAuth,
+            },
+          }),
+        });
+
+        const json = await response.json().catch(() => null);
+        const pin = json && json.data && json.data.v3GetPinQueryv2 && json.data.v3GetPinQueryv2.data;
+        if (!pin) return null;
+
+        return {
+          entity_id: String(pin.entityId || pinId),
+          detail_page_url: pin.seoUrl ? `https://www.pinterest.com${pin.seoUrl.startsWith('/') ? '' : '/'}${pin.seoUrl}` : `https://www.pinterest.com/pin/${pinId}/`,
+          image_url:
+            (pin.images_orig && pin.images_orig.url) ||
+            pin.imageLargeUrl ||
+            (pin.images_736x && pin.images_736x.url) ||
+            (pin.images_564x && pin.images_564x.url) ||
+            (pin.images_474x && pin.images_474x.url) ||
+            null,
+          author_name:
+            (pin.closeupAttribution && pin.closeupAttribution.fullName) ||
+            (pin.nativeCreator && pin.nativeCreator.fullName) ||
+            (pin.pinner && pin.pinner.username) ||
+            null,
+          author_url:
+            pin.pinner && pin.pinner.username
+              ? `https://www.pinterest.com/${pin.pinner.username}/`
+              : null,
+          width:
+            (pin.images_orig && pin.images_orig.width) ||
+            (pin.images_736x && pin.images_736x.width) ||
+            (pin.images_564x && pin.images_564x.width) ||
+            (pin.images_474x && pin.images_474x.width) ||
+            null,
+          height:
+            (pin.images_orig && pin.images_orig.height) ||
+            (pin.images_736x && pin.images_736x.height) ||
+            (pin.images_564x && pin.images_564x.height) ||
+            (pin.images_474x && pin.images_474x.height) ||
+            null,
+          like_count: pin.likeCount || pin.likesCount || 0,
+          favorite_count:
+            pin.aggregatedPinData &&
+            pin.aggregatedPinData.aggregatedStats &&
+            pin.aggregatedPinData.aggregatedStats.saves
+              ? pin.aggregatedPinData.aggregatedStats.saves
+              : (pin.repinCount || 0),
+          comment_count: pin.commentCount || pin.commentsCount || 0,
+          share_count: pin.shareCount || pin.sharesCount || 0,
+        };
+      }
+
+      const results = [];
+      const batchSize = 8;
+      for (let index = 0; index < pinIds.length; index += batchSize) {
+        const batch = pinIds.slice(index, index + batchSize);
+        const items = await Promise.all(batch.map(pinId => fetchPin(pinId).catch(() => null)));
+        for (const item of items) {
+          if (item) results.push(item);
+        }
+      }
+      return results;
+    }, { currentPath: new URL(task.target_url).pathname, pinIds: pinIds.slice(0, 60) });
+
+    return this.mergePins(pins, fetchedMetrics);
   }
 
   getAuthFileCandidates() {
@@ -328,13 +450,25 @@ class PinterestAdapter extends BaseAdapter {
       ...pin,
       source_page_url: page.url(),
     }));
-    const mergedPins = this.mergePins(primaryPin ? [primaryPin] : [], pagePins, networkPins)
-      .filter(pin => this.isUsefulImage(pin));
+    const enrichedPins = await this.enrichPinsWithMetrics(
+      page,
+      this.mergePins(primaryPin ? [primaryPin] : [], pagePins, networkPins)
+        .filter(pin => this.isUsefulImage(pin)),
+      task
+    );
+
+    const mergedPins = enrichedPins.filter(pin => this.isUsefulImage(pin));
+    const pinsWithMetrics = mergedPins.filter(pin =>
+      Number(pin.like_count || 0) > 0 ||
+      Number(pin.favorite_count || 0) > 0 ||
+      Number(pin.comment_count || 0) > 0 ||
+      Number(pin.share_count || 0) > 0
+    ).length;
 
     if (primaryPin) {
       console.log(`[Pinterest] detail metrics: like=${primaryPin.like_count || 0} fav=${primaryPin.favorite_count || 0} comment=${primaryPin.comment_count || 0} share=${primaryPin.share_count || 0}`);
     }
-    console.log(`[Pinterest] detail page extracted images: ${mergedPins.length}; auto expansion disabled`);
+    console.log(`[Pinterest] detail page extracted images: ${mergedPins.length}; with metrics: ${pinsWithMetrics}; auto expansion disabled`);
 
     const images = mergedPins.map(pin => this.normalizeImage(pin));
     return { images, new_tasks: [] };
@@ -611,6 +745,7 @@ class PinterestAdapter extends BaseAdapter {
         null;
 
       return {
+        entity_id: (relayPinData && relayPinData.entityId) || pinId || null,
         image_url: imageUrl,
         detail_page_url: detailPageUrl,
         source_page_url: window.location.href,
@@ -628,6 +763,34 @@ class PinterestAdapter extends BaseAdapter {
 
   async extractAllPins(page) {
     return await page.evaluate(() => {
+      function extractPinIdFromUrl(url) {
+        const match = String(url || '').match(/\/pin\/(\d+)/i);
+        return match ? match[1] : null;
+      }
+
+      function findPinLinkForNode(node) {
+        let current = node;
+        for (let depth = 0; current && depth < 8; depth++) {
+          if (current.matches && current.matches('a[href*="/pin/"]')) {
+            return current;
+          }
+
+          if (current.querySelector) {
+            const descendant = current.querySelector('a[href*="/pin/"]');
+            if (descendant) return descendant;
+          }
+
+          const parent = current.parentElement;
+          if (parent && parent.querySelector) {
+            const siblingLink = parent.querySelector('a[href*="/pin/"]');
+            if (siblingLink) return siblingLink;
+          }
+
+          current = parent;
+        }
+        return null;
+      }
+
       function parseCount(text) {
         if (!text) return 0;
         const normalized = String(text).trim().toLowerCase().replace(/,/g, '');
@@ -644,7 +807,7 @@ class PinterestAdapter extends BaseAdapter {
       if (pinContainers.length > 0) {
         for (const pin of pinContainers) {
           const img = pin.querySelector('img');
-          const link = pin.querySelector('a[href*="/pin/"]');
+          const link = pin.querySelector('a[href*="/pin/"]') || findPinLinkForNode(pin);
           if (!img) continue;
 
           const src = img.src || img.dataset.src || '';
@@ -685,6 +848,7 @@ class PinterestAdapter extends BaseAdapter {
           }
 
           results.push({
+            entity_id: link ? extractPinIdFromUrl(link.href) : null,
             image_url: highRes,
             detail_page_url: link ? link.href : null,
             source_page_url: window.location.href,
@@ -713,9 +877,10 @@ class PinterestAdapter extends BaseAdapter {
           if (seenUrls.has(highRes)) continue;
           seenUrls.add(highRes);
 
-          const link = img.closest('a[href*="/pin/"]') || img.parentElement?.closest('a[href*="/pin/"]');
+          const link = findPinLinkForNode(img);
 
           results.push({
+            entity_id: link ? extractPinIdFromUrl(link.href) : null,
             image_url: highRes,
             detail_page_url: link ? link.href : null,
             source_page_url: window.location.href,

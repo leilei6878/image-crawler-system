@@ -8,18 +8,26 @@ class BaseAdapter {
   }
 
   async scrollPage(page, seconds = 30, maxRounds = 10) {
-    const intervalMs = 2000;
-    const totalRounds = Math.min(Math.ceil(seconds * 1000 / intervalMs), maxRounds);
+    const totalMs = Math.max(0, Number(seconds || 0) * 1000);
+    const totalRounds = Math.max(0, Number(maxRounds || 0));
+    if (totalMs <= 0 || totalRounds <= 0) {
+      return;
+    }
+
+    const intervalMs = Math.max(1200, Math.floor(totalMs / totalRounds));
+    const deadline = Date.now() + totalMs;
 
     let lastHeight = await page.evaluate(() => document.body.scrollHeight);
     let noChangeCount = 0;
 
     for (let round = 0; round < totalRounds; round++) {
+      if (Date.now() >= deadline) break;
+
       await page.evaluate(() => {
-        const nextY = window.scrollY + Math.max(window.innerHeight, 1200);
-        window.scrollTo({ top: nextY, behavior: 'instant' });
+        const nextY = window.scrollY + Math.max(window.innerHeight * 0.9, 1200);
+        window.scrollTo(0, nextY);
       });
-      await page.mouse.wheel(0, 1600).catch(() => {});
+      await page.mouse.wheel(0, 2200).catch(() => {});
       await page.waitForTimeout(intervalMs);
 
       const newHeight = await page.evaluate(() => document.body.scrollHeight);

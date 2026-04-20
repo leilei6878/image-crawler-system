@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  foundation:
+    name: Foundation checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required foundation files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "README.md"
+            "docs/PROJECT_CONTEXT.md"
+            "docs/TODO.md"
+            "AGENTS.md"
+            ".github/workflows/ci.yml"
+            ".env.example"
+          )
+
+          for file in "${required_files[@]}"; do
+            test -f "$file"
+          done

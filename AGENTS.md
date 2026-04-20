@@ -1,30 +1,58 @@
-# Agent Instructions
+# AGENTS.md
 
-This repository is developed incrementally. When making changes:
+Guidance for AI coding agents working in this repository.
 
-## General Rules
-1. Do not perform unnecessary full-project rewrites.
-2. Prefer minimal, targeted, reviewable changes.
-3. Read README.md and docs/PROJECT_CONTEXT.md before making changes.
-4. Update docs when changing behavior, commands, or architecture.
+## Working Principles
+
+- Keep changes scoped to the requested task.
+- Do not perform unnecessary full-project rewrites.
+- Do not refactor unrelated code.
+- Preserve existing conventions once application code exists.
+- Prefer small, reviewable changes.
+- Do not commit secrets, tokens, cookies, or production configuration.
+
+## Repository Context
+
+- Read `README.md` first for project overview.
+- Read `docs/PROJECT_CONTEXT.md` before making architecture-level changes.
+- Check `docs/TODO.md` for current work items and avoid duplicating tasks.
 
 ## Code Rules
-1. Keep modules decoupled.
-2. Keep crawler source-specific logic isolated from shared logic.
-3. Avoid hardcoded paths, credentials, or magic values.
-4. Prefer configuration through environment variables or config files.
-5. Add logging for critical operations and failures.
-6. Network operations should support timeout and retry where practical.
+
+- Keep modules decoupled.
+- Keep crawler source-specific logic isolated from shared logic.
+- Avoid hardcoded paths, credentials, or magic values.
+- Prefer configuration through environment variables or config files.
+- Add logging for critical operations and failures.
+- Network operations should support timeout and retry where practical.
+
+## Validation
+
+Before handing off changes:
+
+- Confirm the requested files exist.
+- Run the available local checks for the current project stage.
+- If implementation code is added later, run the relevant formatter, linter, and test suite.
+
+## Environment
+
+- Use `.env.example` as the public template for required configuration.
+- Keep local `.env` files untracked.
+- Add new environment variables to `.env.example` with safe placeholder values.
 
 ## Delivery Rules
-For each task:
-1. Explain what files were changed
-2. Explain how to run or verify
-3. Explain any risks or follow-up work
-4. Keep changes scoped to the requested goal
+
+For each task, include:
+
+- Files created or updated.
+- Commands or checks run.
+- Any assumptions made because project runtime or architecture is not yet defined.
+- Any risks or follow-up work.
 
 ## Refactor Rules
+
 Large refactors should only happen if:
-- there is a clear architectural problem
-- the benefit is documented
-- the blast radius is explained
+
+- There is a clear architectural problem.
+- The benefit is documented.
+- The blast radius is explained.

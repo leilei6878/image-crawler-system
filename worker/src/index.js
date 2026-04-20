@@ -3,6 +3,7 @@ const axios = require('axios');
 const { BrowserPool } = require('./browser/pool');
 const AdapterFactory = require('./adapters/factory');
 const { v4: uuidv4 } = require('uuid');
+const { passesFilter } = require('./filter');
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 const HOST_KEY = process.env.HOST_KEY || 'dev-host-key-001';
@@ -15,71 +16,6 @@ const api = axios.create({ baseURL: SERVER_URL, timeout: 30000 });
 
 let hostId = null;
 let running = 0;
-
-function passesFilter(img, filter) {
-  if (!filter) return true;
-  const mode = filter.logic_mode || 'and';
-
-  if (filter.exclude_video) {
-    const url = (img.image_url || '').toLowerCase();
-    if (url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.mov') || url.includes('video')) {
-      return false;
-    }
-  }
-
-  if (filter.exclude_collage) {
-    const url = (img.image_url || '').toLowerCase();
-    if (url.includes('collage') || url.includes('grid')) {
-      return false;
-    }
-  }
-
-  const checks = [];
-
-  if (filter.min_like && filter.min_like > 0) {
-    const val = parseInt(img.like_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_like);
-    }
-  }
-  if (filter.min_favorite && filter.min_favorite > 0) {
-    const val = parseInt(img.favorite_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_favorite);
-    }
-  }
-  if (filter.min_comment && filter.min_comment > 0) {
-    const val = parseInt(img.comment_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_comment);
-    }
-  }
-  if (filter.min_share && filter.min_share > 0) {
-    const val = parseInt(img.share_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_share);
-    }
-  }
-  if (filter.min_width && filter.min_width > 0) {
-    const val = parseInt(img.width);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_width);
-    }
-  }
-  if (filter.min_height && filter.min_height > 0) {
-    const val = parseInt(img.height);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_height);
-    }
-  }
-
-  if (checks.length === 0) return true;
-
-  if (mode === 'or') {
-    return checks.some(c => c);
-  }
-  return checks.every(c => c);
-}
 
 async function heartbeat() {
   try {

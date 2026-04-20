@@ -6,6 +6,25 @@ const logger = require('../services/logger');
 function passesFilter(img, filter) {
   const mode = filter.logic_mode || 'and';
 
+  function parsePositiveInt(value) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function passesMinThreshold(rawValue, rawThreshold) {
+    const threshold = parsePositiveInt(rawThreshold);
+    if (threshold === null || threshold <= 0) {
+      return true;
+    }
+
+    const value = parsePositiveInt(rawValue);
+    if (value === null) {
+      return false;
+    }
+
+    return value >= threshold;
+  }
+
   if (filter.exclude_video) {
     const url = (img.image_url || '').toLowerCase();
     if (url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.mov') || url.includes('video')) {
@@ -21,43 +40,12 @@ function passesFilter(img, filter) {
   }
 
   const checks = [];
-
-  if (filter.min_like && filter.min_like > 0) {
-    const val = parseInt(img.like_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_like);
-    }
-  }
-  if (filter.min_favorite && filter.min_favorite > 0) {
-    const val = parseInt(img.favorite_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_favorite);
-    }
-  }
-  if (filter.min_comment && filter.min_comment > 0) {
-    const val = parseInt(img.comment_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_comment);
-    }
-  }
-  if (filter.min_share && filter.min_share > 0) {
-    const val = parseInt(img.share_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_share);
-    }
-  }
-  if (filter.min_width && filter.min_width > 0) {
-    const val = parseInt(img.width);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_width);
-    }
-  }
-  if (filter.min_height && filter.min_height > 0) {
-    const val = parseInt(img.height);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_height);
-    }
-  }
+  checks.push(passesMinThreshold(img.like_count, filter.min_like));
+  checks.push(passesMinThreshold(img.favorite_count, filter.min_favorite));
+  checks.push(passesMinThreshold(img.comment_count, filter.min_comment));
+  checks.push(passesMinThreshold(img.share_count, filter.min_share));
+  checks.push(passesMinThreshold(img.width, filter.min_width));
+  checks.push(passesMinThreshold(img.height, filter.min_height));
 
   if (checks.length === 0) return true;
 

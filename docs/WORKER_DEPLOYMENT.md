@@ -123,6 +123,30 @@ npm start
 - 主控端防火墙是否放行 `3000` 端口。
 - 被控端和主控端是否在同一网络或 VPN 中。
 
+## Pinterest 登录态
+
+当前 Pinterest 采集默认要求登录态。Worker 会优先读取以下文件：
+
+```text
+worker/cookies/pinterest-storage-state.json
+worker/cookies/pinterest.json
+```
+
+也可以通过环境变量显式指定：
+
+```env
+PINTEREST_STORAGE_STATE_PATH=./cookies/pinterest-storage-state.json
+PINTEREST_COOKIE_PATH=./cookies/pinterest.json
+```
+
+建议优先使用 Playwright 导出的 `storage state`。如果没有有效登录态，Pinterest 任务会明确报错，而不是退回游客模式。
+
+如果你明确要允许游客采集，可以在 `worker/.env` 中加入：
+
+```env
+PINTEREST_REQUIRE_LOGIN=false
+```
+
 ## 不要提交的内容
 
 以下文件只用于本地部署，不应提交到仓库：

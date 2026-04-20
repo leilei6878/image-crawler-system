@@ -5,28 +5,26 @@ on:
   pull_request:
 
 jobs:
-  foundation:
-    name: Foundation checks
+  test:
+    name: Python tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify required foundation files
-        shell: bash
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
         run: |
-          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
-          required_files=(
-            "README.md"
-            "docs/PROJECT_CONTEXT.md"
-            "docs/TODO.md"
-            "AGENTS.md"
-            ".github/workflows/ci.yml"
-            ".env.example"
-          )
+      - name: Compile Python files
+        run: python -m compileall src tests
 
-          for file in "${required_files[@]}"; do
-            test -f "$file"
-          done
+      - name: Run tests
+        run: python -m pytest

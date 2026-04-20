@@ -6,7 +6,7 @@
 
 ## Current Stage
 
-Repository foundation. The project structure and engineering guardrails are being established before application code is added.
+最小可运行 Python 项目骨架。项目已经从纯文档阶段推进到可以安装依赖、加载配置、初始化爬虫适配器并运行 pytest 的阶段。
 
 ## Problem Statement
 
@@ -26,18 +26,19 @@ Build a crawler system that can discover, fetch, and record image assets from co
 - Do not couple crawler logic to a single source unless the source is explicitly scoped.
 - Do not bypass source access policies, authentication requirements, or rate limits.
 - Do not add unrelated framework or infrastructure choices before the runtime architecture is defined.
+- Do not build the full distributed crawler system before the minimal crawler contract is stable.
 
 ## Initial Architecture Assumptions
 
-- Configuration will be environment-driven at first, with room for typed configuration later.
+- Python is the primary runtime.
+- Configuration is environment-driven at first, with room for typed configuration later.
 - Crawling should be split into fetch, parse, normalize, store, and report stages.
 - Network access should use bounded concurrency, retries, timeouts, and user-agent configuration.
 - Storage should be abstracted behind a small interface so the backend can be selected deliberately.
-- CI should start small and become stricter as implementation code is added.
+- CI should install dependencies, compile Python files, and run pytest.
 
 ## Open Decisions
 
-- Primary language and runtime.
 - Queue or scheduler technology.
 - Storage backend for image metadata and crawl state.
 - Asset storage strategy for downloaded images.

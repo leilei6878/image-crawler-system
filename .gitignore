@@ -19,6 +19,7 @@ logs/
 # Downloads / temp
 downloads/
 screenshots/
+.local-mysql/
 
 # Replit internal
 .pythonlibs/

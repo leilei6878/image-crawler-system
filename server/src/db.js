@@ -1,3 +1,8 @@
+if (process.env.DB_CLIENT === 'mysql') {
+  module.exports = require('./db_mysql');
+  return;
+}
+
 const { Pool } = require('pg');
 require('dotenv').config();
 

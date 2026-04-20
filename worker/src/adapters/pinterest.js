@@ -223,11 +223,143 @@ class PinterestAdapter extends BaseAdapter {
     const afterScrollCount = await page.evaluate(() => document.querySelectorAll('img[src*="pinimg.com"]').length);
     console.log(`[Pinterest] 滚动后图片数: ${afterScrollCount}`);
 
-    const rawPins = await this.extractAllPins(page);
-    console.log(`[Pinterest] Pin 页面提取到 ${rawPins.length} 张图片`);
+    const primaryPin = await this.extractPrimaryPin(page, task);
+    const recommendationTasks = await this.extractRecommendationTasks(page, task.target_url);
 
-    const images = rawPins.map(pin => this.normalizeImage(pin));
-    return { images, new_tasks: [] };
+    console.log(`[Pinterest] Pin 页面主图提取: ${primaryPin ? 1 : 0}，推荐详情任务: ${recommendationTasks.length}`);
+
+    const images = primaryPin ? [this.normalizeImage(primaryPin)] : [];
+    return { images, new_tasks: recommendationTasks };
+  }
+
+  async extractPrimaryPin(page, task) {
+    return await page.evaluate((taskUrl) => {
+      function parseCount(text) {
+        if (!text) return 0;
+        const normalized = text.trim().toLowerCase().replace(/,/g, '');
+        if (normalized.includes('k')) return Math.round(parseFloat(normalized) * 1000);
+        if (normalized.includes('m')) return Math.round(parseFloat(normalized) * 1000000);
+        const num = parseInt(normalized, 10);
+        return Number.isNaN(num) ? 0 : num;
+      }
+
+      function extractMetric(texts, keywords) {
+        let max = 0;
+        for (const text of texts) {
+          const value = String(text || '').replace(/\s+/g, ' ').trim();
+          if (!value) continue;
+
+          for (const keyword of keywords) {
+            const afterRegex = new RegExp(`(\\d[\\d,.]*[kKmM]?)\\s*${keyword}`, 'i');
+            const beforeRegex = new RegExp(`${keyword}\\s*(\\d[\\d,.]*[kKmM]?)`, 'i');
+
+            const afterMatch = value.match(afterRegex);
+            if (afterMatch) max = Math.max(max, parseCount(afterMatch[1]));
+
+            const beforeMatch = value.match(beforeRegex);
+            if (beforeMatch) max = Math.max(max, parseCount(beforeMatch[1]));
+          }
+        }
+        return max;
+      }
+
+      const candidates = Array.from(document.querySelectorAll('img[src*="pinimg.com"]'))
+        .map(img => ({
+          img,
+          rect: img.getBoundingClientRect(),
+        }))
+        .filter(item =>
+          item.rect.width >= 200 &&
+          item.rect.height >= 200 &&
+          item.rect.top < window.innerHeight * 1.2
+        )
+        .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+
+      const best = candidates[0];
+      if (!best) return null;
+
+      let imageUrl = best.img.currentSrc || best.img.src || '';
+      if (imageUrl.includes('236x')) imageUrl = imageUrl.replace('236x', 'originals');
+      else if (imageUrl.includes('474x')) imageUrl = imageUrl.replace('474x', 'originals');
+      else if (imageUrl.includes('564x')) imageUrl = imageUrl.replace('564x', 'originals');
+
+      const textSamples = [];
+      const selectors = [
+        '[aria-label]',
+        'button',
+        'a',
+        'span',
+        'div',
+      ];
+
+      for (const selector of selectors) {
+        for (const el of document.querySelectorAll(selector)) {
+          const text = (el.getAttribute('aria-label') || el.textContent || '').trim();
+          if (text && text.length <= 120) {
+            textSamples.push(text);
+          }
+        }
+      }
+
+      const pageText = document.body ? document.body.innerText : '';
+      if (pageText) {
+        textSamples.push(pageText);
+      }
+
+      let favoriteCount = extractMetric(textSamples, ['save', 'saves', '保存', '收藏']);
+      let commentCount = extractMetric(textSamples, ['comment', 'comments', '评论']);
+      let shareCount = extractMetric(textSamples, ['share', 'shares', '分享']);
+      let likeCount = extractMetric(textSamples, ['like', 'likes', '点赞', '赞']);
+
+      // Pinterest 实际更稳定的互动指标通常是 saves。若没有显式 likes，用 saves 兜底。
+      if (!likeCount && favoriteCount) {
+        likeCount = favoriteCount;
+      }
+      if (!favoriteCount && likeCount) {
+        favoriteCount = likeCount;
+      }
+
+      const pinLink = best.img.closest('a[href*="/pin/"]');
+
+      return {
+        image_url: imageUrl,
+        detail_page_url: pinLink ? pinLink.href : taskUrl,
+        source_page_url: window.location.href,
+        width: best.img.naturalWidth || Math.round(best.rect.width) || null,
+        height: best.img.naturalHeight || Math.round(best.rect.height) || null,
+        like_count: likeCount || 0,
+        favorite_count: favoriteCount || 0,
+        comment_count: commentCount || 0,
+        share_count: shareCount || 0,
+      };
+    }, task.target_url);
+  }
+
+  async extractRecommendationTasks(page, currentUrl) {
+    return await page.evaluate((currentPageUrl) => {
+      const seen = new Set();
+      const currentNormalized = String(currentPageUrl || '').replace(/\/+$/, '');
+      const tasks = [];
+
+      for (const link of document.querySelectorAll('a[href*="/pin/"]')) {
+        let href = link.href;
+        if (!href) continue;
+
+        href = href.replace(/\?.*$/, '').replace(/\/+$/, '');
+        if (!href.startsWith('http')) continue;
+        if (href === currentNormalized) continue;
+        if (seen.has(href)) continue;
+        seen.add(href);
+
+        tasks.push({
+          task_type: 'detail',
+          target_url: href,
+          priority: 5,
+        });
+      }
+
+      return tasks.slice(0, 20);
+    }, currentUrl);
   }
 
   async extractAllPins(page) {

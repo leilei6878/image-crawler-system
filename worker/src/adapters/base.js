@@ -11,17 +11,21 @@ class BaseAdapter {
     const intervalMs = 2000;
     const totalRounds = Math.min(Math.ceil(seconds * 1000 / intervalMs), maxRounds);
 
-    let lastHeight = 0;
+    let lastHeight = await page.evaluate(() => document.body.scrollHeight);
     let noChangeCount = 0;
 
     for (let round = 0; round < totalRounds; round++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await page.evaluate(() => {
+        const nextY = window.scrollY + Math.max(window.innerHeight, 1200);
+        window.scrollTo({ top: nextY, behavior: 'instant' });
+      });
+      await page.mouse.wheel(0, 1600).catch(() => {});
       await page.waitForTimeout(intervalMs);
 
       const newHeight = await page.evaluate(() => document.body.scrollHeight);
       if (newHeight === lastHeight) {
         noChangeCount++;
-        if (noChangeCount >= 3) break;
+        if (noChangeCount >= 5) break;
       } else {
         noChangeCount = 0;
       }

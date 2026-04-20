@@ -357,6 +357,7 @@ class PinterestAdapter extends BaseAdapter {
         .join('\n');
 
       let favoriteCount = Math.max(
+        relayPinData ? parseCount(relayPinData.repinCount) : 0,
         relayPinData && relayPinData.aggregatedPinData && relayPinData.aggregatedPinData.aggregatedStats
           ? parseCount(relayPinData.aggregatedPinData.aggregatedStats.saves)
           : 0,
@@ -425,7 +426,7 @@ class PinterestAdapter extends BaseAdapter {
       );
 
       let likeCount = Math.max(
-        relayPinData ? parseCount(relayPinData.likeCount || relayPinData.likesCount || relayPinData.repinCount) : 0,
+        relayPinData ? parseCount(relayPinData.likeCount || relayPinData.likesCount) : 0,
         extractMetric(textSamples, [
           'like',
           'likes',
@@ -443,13 +444,6 @@ class PinterestAdapter extends BaseAdapter {
           'reactionCount',
         ], pinId)
       );
-
-      if (!likeCount && favoriteCount) {
-        likeCount = favoriteCount;
-      }
-      if (!favoriteCount && likeCount) {
-        favoriteCount = likeCount;
-      }
 
       const pinLink = best ? best.img.closest('a[href*="/pin/"]') : null;
       const detailPageUrl = pinLink ? pinLink.href : taskUrl;
@@ -554,13 +548,6 @@ class PinterestAdapter extends BaseAdapter {
             } else if (/like|react|love|点赞|赞|libi|líbí/.test(combined)) {
               likeCount = Math.max(likeCount, count);
             }
-          }
-
-          if (!likeCount && favoriteCount) {
-            likeCount = favoriteCount;
-          }
-          if (!favoriteCount && likeCount) {
-            favoriteCount = likeCount;
           }
 
           results.push({

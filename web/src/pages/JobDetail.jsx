@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
-import { jobApi, imageApi, hostApi } from '../services/api';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
+import { hostApi, imageApi, jobApi } from '../services/api';
 
 export default function JobDetail({ showToast }) {
   const { id } = useParams();
@@ -61,7 +61,7 @@ export default function JobDetail({ showToast }) {
     try {
       await imageApi.expand(expandModal.id, {
         mode: expandMode,
-        target_host_id: expandMode === 'manual' ? parseInt(expandHostId) : undefined
+        target_host_id: expandMode === 'manual' ? parseInt(expandHostId, 10) : undefined,
       });
       showToast('扩采任务已创建', 'success');
       setExpandModal(null);
@@ -101,7 +101,6 @@ export default function JobDetail({ showToast }) {
         </div>
       </div>
 
-      {/* 任务概览 */}
       <div className="card">
         <div className="card-header"><h3>任务概览</h3></div>
         <div className="info-grid">
@@ -144,7 +143,6 @@ export default function JobDetail({ showToast }) {
         </div>
       </div>
 
-      {/* 统计 */}
       <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
         <div className="stat-card success">
           <div className="stat-value">{img_total || 0}</div>
@@ -168,30 +166,29 @@ export default function JobDetail({ showToast }) {
         </div>
       </div>
 
-      {/* 筛选规则 */}
       {filters && (
         <div className="card">
           <div className="card-header"><h3>筛选规则</h3></div>
           <div className="info-grid">
             <div className="info-item"><label>逻辑</label><div className="value">{filters.logic_mode?.toUpperCase()}</div></div>
-            {filters.min_like && <div className="info-item"><label>最小点赞</label><div className="value">{filters.min_like}</div></div>}
-            {filters.min_width && <div className="info-item"><label>最小宽度</label><div className="value">{filters.min_width}px</div></div>}
-            {filters.min_height && <div className="info-item"><label>最小高度</label><div className="value">{filters.min_height}px</div></div>}
+            {filters.min_like != null && <div className="info-item"><label>最小点赞</label><div className="value">{filters.min_like}</div></div>}
+            {filters.min_favorite != null && <div className="info-item"><label>最小收藏</label><div className="value">{filters.min_favorite}</div></div>}
+            {filters.min_comment != null && <div className="info-item"><label>最小评论</label><div className="value">{filters.min_comment}</div></div>}
+            {filters.min_share != null && <div className="info-item"><label>最小分享</label><div className="value">{filters.min_share}</div></div>}
+            {filters.min_width != null && <div className="info-item"><label>最小宽度</label><div className="value">{filters.min_width}px</div></div>}
+            {filters.min_height != null && <div className="info-item"><label>最小高度</label><div className="value">{filters.min_height}px</div></div>}
             <div className="info-item"><label>排除视频</label><div className="value">{filters.exclude_video ? '是' : '否'}</div></div>
             <div className="info-item"><label>排除拼图</label><div className="value">{filters.exclude_collage ? '是' : '否'}</div></div>
           </div>
         </div>
       )}
 
-      {/* 选项卡 */}
       <div className="card">
         <div className="tabs">
-          <div className={`tab ${activeTab === 'images' ? 'active' : ''}`}
-            onClick={() => setActiveTab('images')}>
+          <div className={`tab ${activeTab === 'images' ? 'active' : ''}`} onClick={() => setActiveTab('images')}>
             图片 ({img_total})
           </div>
-          <div className={`tab ${activeTab === 'tasks' ? 'active' : ''}`}
-            onClick={() => setActiveTab('tasks')}>
+          <div className={`tab ${activeTab === 'tasks' ? 'active' : ''}`} onClick={() => setActiveTab('tasks')}>
             页面任务 ({page_tasks?.length || 0})
           </div>
         </div>
@@ -213,8 +210,10 @@ export default function JobDetail({ showToast }) {
                       <div className="image-card-info">
                         {img.author_name && <div style={{ fontWeight: 500 }}>{img.author_name}</div>}
                         <div>
-                          {img.width && img.height && `${img.width}×${img.height}`}
-                          {img.like_count != null && ` ♥${img.like_count}`}
+                          {img.width && img.height && `${img.width}x${img.height}`}
+                          {img.like_count != null && ` ♥点赞:${img.like_count}`}
+                          {img.favorite_count != null && ` ★收藏:${img.favorite_count}`}
+                          {img.comment_count != null && ` 评论:${img.comment_count}`}
                         </div>
                         <div style={{ marginTop: 2 }}>
                           <span className={`status-tag status-${img.expand_status}`} style={{ fontSize: 11 }}>
@@ -224,14 +223,25 @@ export default function JobDetail({ showToast }) {
                       </div>
                       <div className="image-card-actions">
                         {img.detail_page_url && img.expand_status === 'not_expanded' && (
-                          <button className="btn btn-xs btn-primary"
-                            onClick={() => { setExpandModal(img); setExpandMode('local'); }}>
+                          <button
+                            className="btn btn-xs btn-primary"
+                            onClick={() => {
+                              setExpandModal(img);
+                              setExpandMode('local');
+                            }}
+                          >
                             扩采
                           </button>
                         )}
                         {img.detail_page_url && (
-                          <a href={img.detail_page_url} target="_blank" rel="noreferrer"
-                            className="btn btn-xs btn-outline">详情页</a>
+                          <a
+                            href={img.detail_page_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="btn btn-xs btn-outline"
+                          >
+                            详情页
+                          </a>
                         )}
                       </div>
                     </div>
@@ -244,8 +254,7 @@ export default function JobDetail({ showToast }) {
                     <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                       {imgPage} / {Math.ceil(img_total / 50)}
                     </span>
-                    <button disabled={imgPage >= Math.ceil(img_total / 50)}
-                      onClick={() => setImgPage(p => p + 1)}>下一页</button>
+                    <button disabled={imgPage >= Math.ceil(img_total / 50)} onClick={() => setImgPage(p => p + 1)}>下一页</button>
                   </div>
                 )}
               </>
@@ -261,8 +270,14 @@ export default function JobDetail({ showToast }) {
               <table>
                 <thead>
                   <tr>
-                    <th>ID</th><th>类型</th><th>状态</th><th>优先级</th>
-                    <th>重试次数</th><th>URL</th><th>创建时间</th><th>完成时间</th>
+                    <th>ID</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>优先级</th>
+                    <th>重试次数</th>
+                    <th>URL</th>
+                    <th>创建时间</th>
+                    <th>完成时间</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -274,8 +289,7 @@ export default function JobDetail({ showToast }) {
                       <td>{pt.priority}</td>
                       <td>{pt.retry_count}</td>
                       <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <a href={pt.target_url} target="_blank" rel="noreferrer"
-                          style={{ fontSize: 12, color: 'var(--primary)' }}>
+                        <a href={pt.target_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--primary)' }}>
                           {pt.target_url}
                         </a>
                       </td>
@@ -294,7 +308,6 @@ export default function JobDetail({ showToast }) {
         )}
       </div>
 
-      {/* 扩采模态框 */}
       {expandModal && (
         <div className="modal-overlay" onClick={() => setExpandModal(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -309,9 +322,11 @@ export default function JobDetail({ showToast }) {
                 { mode: 'auto', title: '自动调度', desc: '负载均衡器自动选择最优主机' },
                 { mode: 'manual', title: '手动指定', desc: '手动选择目标主机执行' },
               ].map(opt => (
-                <div key={opt.mode}
+                <div
+                  key={opt.mode}
                   className={`expand-option ${expandMode === opt.mode ? 'selected' : ''}`}
-                  onClick={() => setExpandMode(opt.mode)}>
+                  onClick={() => setExpandMode(opt.mode)}
+                >
                   <h4>{opt.title}</h4>
                   <p>{opt.desc}</p>
                 </div>
@@ -321,8 +336,7 @@ export default function JobDetail({ showToast }) {
             {expandMode === 'manual' && (
               <div className="form-group">
                 <label>选择主机</label>
-                <select className="form-control" value={expandHostId}
-                  onChange={e => setExpandHostId(e.target.value)}>
+                <select className="form-control" value={expandHostId} onChange={e => setExpandHostId(e.target.value)}>
                   <option value="">-- 选择主机 --</option>
                   {hosts.filter(h => h.status === 'online').map(h => (
                     <option key={h.id} value={h.id}>

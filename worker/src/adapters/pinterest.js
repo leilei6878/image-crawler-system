@@ -9,18 +9,6 @@ class PinterestAdapter extends BaseAdapter {
     super('pinterest');
   }
 
-  requiresEngagementDetails(task) {
-    const filters = task && task.filters;
-    if (!filters) return false;
-
-    return [
-      filters.min_like,
-      filters.min_favorite,
-      filters.min_comment,
-      filters.min_share,
-    ].some(value => parseInt(value, 10) > 0);
-  }
-
   getAuthFileCandidates() {
     const cookiePaths = [
       process.env.PINTEREST_COOKIE_PATH,
@@ -49,11 +37,11 @@ class PinterestAdapter extends BaseAdapter {
         const storageState = JSON.parse(raw);
         if (Array.isArray(storageState.cookies) && storageState.cookies.length > 0) {
           await context.addCookies(storageState.cookies);
-          console.log(`[Pinterest] 已加载 storage state: ${storagePath} (${storageState.cookies.length} 条 cookies)`);
+          console.log(`[Pinterest] loaded storage state: ${storagePath} (${storageState.cookies.length} cookies)`);
           return { loaded: true, source: storagePath, type: 'storage_state' };
         }
       } catch (err) {
-        console.log(`[Pinterest] 加载 storage state 失败: ${storagePath} - ${err.message}`);
+        console.log(`[Pinterest] failed to load storage state: ${storagePath} - ${err.message}`);
       }
     }
 
@@ -93,10 +81,10 @@ class PinterestAdapter extends BaseAdapter {
         if (cookies.length === 0) continue;
 
         await context.addCookies(cookies);
-        console.log(`[Pinterest] 已加载 cookies: ${cookiePath} (${cookies.length} 条)`);
+        console.log(`[Pinterest] loaded cookies: ${cookiePath} (${cookies.length} cookies)`);
         return { loaded: true, source: cookiePath, type: 'cookies' };
       } catch (err) {
-        console.log(`[Pinterest] 加载 cookies 失败: ${cookiePath} - ${err.message}`);
+        console.log(`[Pinterest] failed to load cookies: ${cookiePath} - ${err.message}`);
       }
     }
 
@@ -108,18 +96,16 @@ class PinterestAdapter extends BaseAdapter {
     ].filter(Boolean).join(', ');
 
     if (PINTEREST_REQUIRE_LOGIN) {
-      throw new Error(`Pinterest 登录态缺失。请提供 cookies/storage state 文件。可用路径: ${authHint}`);
+      throw new Error(`Pinterest auth state is missing. Provide cookies or storage state. Paths: ${authHint}`);
     }
 
-    console.log('[Pinterest] 未找到登录态文件，将以游客模式采集。');
+    console.log('[Pinterest] auth state not found, continue in guest mode');
     return { loaded: false, source: null, type: 'guest' };
   }
 
   async ensureAuthenticated(context, page, authState) {
     const cookies = await context.cookies('https://www.pinterest.com');
-    const hasSessionCookie = cookies.some(cookie =>
-      cookie.name === '_pinterest_sess' && cookie.value
-    );
+    const hasSessionCookie = cookies.some(cookie => cookie.name === '_pinterest_sess' && cookie.value);
 
     const currentUrl = page.url();
     const loginWallDetected = await page.evaluate(() => {
@@ -127,25 +113,25 @@ class PinterestAdapter extends BaseAdapter {
       return (
         pageText.includes('log in') ||
         pageText.includes('sign up') ||
-        pageText.includes('继续使用') ||
-        pageText.includes('登录后继续')
+        pageText.includes('continue with email') ||
+        pageText.includes('continue')
       );
     }).catch(() => false);
 
     if (PINTEREST_REQUIRE_LOGIN && (!hasSessionCookie || /\/login/i.test(currentUrl) || loginWallDetected)) {
       const source = authState && authState.source ? authState.source : 'unknown';
-      throw new Error(`Pinterest 登录态无效或已过期，请更新认证文件: ${source}`);
+      throw new Error(`Pinterest auth state is invalid or expired: ${source}`);
     }
 
     if (hasSessionCookie) {
-      console.log('[Pinterest] 已检测到登录态，将按登录用户视角采集。');
+      console.log('[Pinterest] authenticated session detected');
     }
   }
 
   async crawl(page, task) {
     const timeout = (task.page_timeout_seconds || 60) * 1000;
 
-    console.log(`[Pinterest] 开始采集: ${task.target_url} (type=${task.task_type})`);
+    console.log(`[Pinterest] start crawl: ${task.target_url} (type=${task.task_type})`);
 
     const authState = await this.loadAuthState(page.context());
 
@@ -161,11 +147,11 @@ class PinterestAdapter extends BaseAdapter {
     const isDetailUrl = /\/pin\/\d+/i.test(url);
 
     if (task.task_type === 'detail' || isDetailUrl) {
-      console.log('[Pinterest] 识别为 Pin 页面，提取主图并尝试滚动加载更多图片');
+      console.log('[Pinterest] detected detail pin page');
       return this.crawlDetail(page, task);
     }
 
-    console.log('[Pinterest] 识别为列表页，使用列表页逻辑');
+    console.log('[Pinterest] detected listing page');
     return this.crawlListing(page, task);
   }
 
@@ -173,74 +159,63 @@ class PinterestAdapter extends BaseAdapter {
     try {
       await page.waitForSelector('[data-test-id="pin"], [role="listitem"], img[src*="pinimg.com"]', { timeout: 15000 });
     } catch {
-      console.log('[Pinterest] 列表页未找到 pin 元素');
+      console.log('[Pinterest] listing page pin elements not found');
     }
 
     if (task.auto_scroll_seconds > 0) {
-      console.log(`[Pinterest] 开始滚动加载: ${task.auto_scroll_seconds} 秒 / 最多 ${task.auto_scroll_max_rounds || 10} 轮`);
+      console.log(`[Pinterest] auto scroll listing page: ${task.auto_scroll_seconds}s / max ${task.auto_scroll_max_rounds || 10} rounds`);
       await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
     }
 
     const rawPins = await this.extractAllPins(page);
-    console.log(`[Pinterest] 列表页提取到 ${rawPins.length} 张图片`);
-
-    if (this.requiresEngagementDetails(task)) {
-      const newTasks = rawPins
-        .filter(pin => pin.detail_page_url)
-        .map(pin => ({
-          task_type: 'detail',
-          target_url: pin.detail_page_url,
-          priority: 5,
-        }));
-
-      console.log(`[Pinterest] 检测到互动指标筛选，列表页改为派发 ${newTasks.length} 个详情任务`);
-      return { images: [], new_tasks: newTasks };
-    }
+    console.log(`[Pinterest] listing page extracted images: ${rawPins.length}`);
 
     const images = rawPins.map(pin => this.normalizeImage(pin));
     return { images, new_tasks: [] };
   }
 
   async crawlDetail(page, task) {
-    console.log('[Pinterest] 等待页面内容加载...');
+    console.log('[Pinterest] waiting for detail content');
 
     try {
       await page.waitForSelector('img[src*="pinimg.com"]', { timeout: 15000 });
     } catch {
-      console.log('[Pinterest] 未检测到 pinimg 图片');
+      console.log('[Pinterest] pin image not found');
     }
 
     await page.waitForTimeout(2000);
 
     const beforeScrollCount = await page.evaluate(() => document.querySelectorAll('img[src*="pinimg.com"]').length);
-    console.log(`[Pinterest] 滚动前图片数: ${beforeScrollCount}`);
+    console.log(`[Pinterest] images before scroll: ${beforeScrollCount}`);
 
     if (task.auto_scroll_seconds > 0) {
-      console.log(`[Pinterest] 开始滚动加载更多推荐图片: ${task.auto_scroll_seconds} 秒 / 最多 ${task.auto_scroll_max_rounds || 10} 轮`);
+      console.log(`[Pinterest] auto scroll detail page: ${task.auto_scroll_seconds}s / max ${task.auto_scroll_max_rounds || 10} rounds`);
       await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
     }
 
     const afterScrollCount = await page.evaluate(() => document.querySelectorAll('img[src*="pinimg.com"]').length);
-    console.log(`[Pinterest] 滚动后图片数: ${afterScrollCount}`);
+    console.log(`[Pinterest] images after scroll: ${afterScrollCount}`);
 
     const primaryPin = await this.extractPrimaryPin(page, task);
-    const recommendationTasks = await this.extractRecommendationTasks(page, task.target_url);
-
-    console.log(`[Pinterest] Pin 页面主图提取: ${primaryPin ? 1 : 0}，推荐详情任务: ${recommendationTasks.length}`);
+    console.log(`[Pinterest] primary image extracted: ${primaryPin ? 1 : 0}; auto expansion disabled`);
 
     const images = primaryPin ? [this.normalizeImage(primaryPin)] : [];
-    return { images, new_tasks: recommendationTasks };
+    return { images, new_tasks: [] };
   }
 
   async extractPrimaryPin(page, task) {
     return await page.evaluate((taskUrl) => {
       function parseCount(text) {
         if (!text) return 0;
-        const normalized = text.trim().toLowerCase().replace(/,/g, '');
+        const normalized = String(text).trim().toLowerCase().replace(/,/g, '');
         if (normalized.includes('k')) return Math.round(parseFloat(normalized) * 1000);
         if (normalized.includes('m')) return Math.round(parseFloat(normalized) * 1000000);
         const num = parseInt(normalized, 10);
         return Number.isNaN(num) ? 0 : num;
+      }
+
+      function escapeRegex(value) {
+        return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       }
 
       function extractMetric(texts, keywords) {
@@ -250,8 +225,9 @@ class PinterestAdapter extends BaseAdapter {
           if (!value) continue;
 
           for (const keyword of keywords) {
-            const afterRegex = new RegExp(`(\\d[\\d,.]*[kKmM]?)\\s*${keyword}`, 'i');
-            const beforeRegex = new RegExp(`${keyword}\\s*(\\d[\\d,.]*[kKmM]?)`, 'i');
+            const escaped = escapeRegex(keyword);
+            const afterRegex = new RegExp(`(\\d[\\d,.]*[kKmM]?)\\s*${escaped}`, 'i');
+            const beforeRegex = new RegExp(`${escaped}\\s*(\\d[\\d,.]*[kKmM]?)`, 'i');
 
             const afterMatch = value.match(afterRegex);
             if (afterMatch) max = Math.max(max, parseCount(afterMatch[1]));
@@ -262,6 +238,35 @@ class PinterestAdapter extends BaseAdapter {
         }
         return max;
       }
+
+      function extractMetricFromSerializedData(serialized, keyPatterns, pinId) {
+        if (!serialized) return 0;
+
+        const scopes = [serialized];
+        if (pinId) {
+          const pinRegex = new RegExp(`.{0,800}${escapeRegex(pinId)}.{0,800}`, 'g');
+          const matches = serialized.match(pinRegex);
+          if (Array.isArray(matches) && matches.length > 0) {
+            scopes.unshift(...matches);
+          }
+        }
+
+        let max = 0;
+        for (const scope of scopes) {
+          for (const key of keyPatterns) {
+            const regex = new RegExp(`["']${escapeRegex(key)}["']\\s*:\\s*(\\d+)`, 'ig');
+            let match = regex.exec(scope);
+            while (match) {
+              max = Math.max(max, parseCount(match[1]));
+              match = regex.exec(scope);
+            }
+          }
+        }
+        return max;
+      }
+
+      const pinIdMatch = String(taskUrl || window.location.href).match(/\/pin\/(\d+)/i);
+      const pinId = pinIdMatch ? pinIdMatch[1] : null;
 
       const candidates = Array.from(document.querySelectorAll('img[src*="pinimg.com"]'))
         .map(img => ({
@@ -284,34 +289,106 @@ class PinterestAdapter extends BaseAdapter {
       else if (imageUrl.includes('564x')) imageUrl = imageUrl.replace('564x', 'originals');
 
       const textSamples = [];
-      const selectors = [
-        '[aria-label]',
-        'button',
-        'a',
-        'span',
-        'div',
-      ];
-
-      for (const selector of selectors) {
+      for (const selector of ['[aria-label]', 'button', 'a', 'span', 'div']) {
         for (const el of document.querySelectorAll(selector)) {
           const text = (el.getAttribute('aria-label') || el.textContent || '').trim();
-          if (text && text.length <= 120) {
+          if (text && text.length <= 160) {
             textSamples.push(text);
           }
         }
       }
 
-      const pageText = document.body ? document.body.innerText : '';
-      if (pageText) {
-        textSamples.push(pageText);
+      if (document.body && document.body.innerText) {
+        textSamples.push(document.body.innerText);
       }
 
-      let favoriteCount = extractMetric(textSamples, ['save', 'saves', '保存', '收藏']);
-      let commentCount = extractMetric(textSamples, ['comment', 'comments', '评论']);
-      let shareCount = extractMetric(textSamples, ['share', 'shares', '分享']);
-      let likeCount = extractMetric(textSamples, ['like', 'likes', '点赞', '赞']);
+      const serializedData = Array.from(document.querySelectorAll('script'))
+        .map(script => script.textContent || '')
+        .filter(Boolean)
+        .join('\n');
 
-      // Pinterest 实际更稳定的互动指标通常是 saves。若没有显式 likes，用 saves 兜底。
+      let favoriteCount = Math.max(
+        extractMetric(textSamples, [
+          'save',
+          'saves',
+          'saved',
+          'save to profile',
+          'repin',
+          '保存',
+          '收藏',
+          'ulozeni',
+          'uložení',
+          'ulozeno',
+          'uloženo',
+          'ulozit',
+          'uložit',
+        ]),
+        extractMetricFromSerializedData(serializedData, [
+          'repin_count',
+          'repinCount',
+          'save_count',
+          'saveCount',
+          'saves_count',
+          'savesCount',
+          'favorite_count',
+          'favoriteCount',
+        ], pinId)
+      );
+
+      let commentCount = Math.max(
+        extractMetric(textSamples, [
+          'comment',
+          'comments',
+          '评论',
+          '留言',
+          'komentar',
+          'komentář',
+          'komentare',
+          'komentáře',
+        ]),
+        extractMetricFromSerializedData(serializedData, [
+          'comment_count',
+          'commentCount',
+          'comments_count',
+          'commentsCount',
+        ], pinId)
+      );
+
+      let shareCount = Math.max(
+        extractMetric(textSamples, [
+          'share',
+          'shares',
+          '分享',
+          'sdilet',
+          'sdílet',
+        ]),
+        extractMetricFromSerializedData(serializedData, [
+          'share_count',
+          'shareCount',
+          'shares_count',
+          'sharesCount',
+        ], pinId)
+      );
+
+      let likeCount = Math.max(
+        extractMetric(textSamples, [
+          'like',
+          'likes',
+          '点赞',
+          '赞',
+          'libi',
+          'líbí',
+        ]),
+        extractMetricFromSerializedData(serializedData, [
+          'like_count',
+          'likeCount',
+          'likes_count',
+          'likesCount',
+          'reaction_count',
+          'reactionCount',
+        ], pinId)
+      );
+
       if (!likeCount && favoriteCount) {
         likeCount = favoriteCount;
       }
@@ -335,47 +412,19 @@ class PinterestAdapter extends BaseAdapter {
     }, task.target_url);
   }
 
-  async extractRecommendationTasks(page, currentUrl) {
-    return await page.evaluate((currentPageUrl) => {
-      const seen = new Set();
-      const currentNormalized = String(currentPageUrl || '').replace(/\/+$/, '');
-      const tasks = [];
-
-      for (const link of document.querySelectorAll('a[href*="/pin/"]')) {
-        let href = link.href;
-        if (!href) continue;
-
-        href = href.replace(/\?.*$/, '').replace(/\/+$/, '');
-        if (!href.startsWith('http')) continue;
-        if (href === currentNormalized) continue;
-        if (seen.has(href)) continue;
-        seen.add(href);
-
-        tasks.push({
-          task_type: 'detail',
-          target_url: href,
-          priority: 5,
-        });
-      }
-
-      return tasks.slice(0, 20);
-    }, currentUrl);
-  }
-
   async extractAllPins(page) {
     return await page.evaluate(() => {
       function parseCount(text) {
         if (!text) return 0;
-        text = text.trim().toLowerCase().replace(/,/g, '');
-        if (text.includes('k')) return Math.round(parseFloat(text) * 1000);
-        if (text.includes('m')) return Math.round(parseFloat(text) * 1000000);
-        const num = parseInt(text, 10);
+        const normalized = String(text).trim().toLowerCase().replace(/,/g, '');
+        if (normalized.includes('k')) return Math.round(parseFloat(normalized) * 1000);
+        if (normalized.includes('m')) return Math.round(parseFloat(normalized) * 1000000);
+        const num = parseInt(normalized, 10);
         return Number.isNaN(num) ? 0 : num;
       }
 
       const seenUrls = new Set();
       const results = [];
-
       const pinContainers = document.querySelectorAll('[data-test-id="pin"], [role="listitem"]');
 
       if (pinContainers.length > 0) {
@@ -395,9 +444,9 @@ class PinterestAdapter extends BaseAdapter {
           if (seenUrls.has(highRes)) continue;
           seenUrls.add(highRes);
 
-          let like_count = 0;
-          let comment_count = 0;
-          let favorite_count = 0;
+          let likeCount = 0;
+          let commentCount = 0;
+          let favoriteCount = 0;
 
           const countEls = pin.querySelectorAll('[data-test-id*="count"], [data-test-id*="reaction"], span');
           for (const el of countEls) {
@@ -412,13 +461,20 @@ class PinterestAdapter extends BaseAdapter {
             const ariaLabel = String(el.getAttribute('aria-label') || '').toLowerCase();
             const combined = `${nearby} ${ariaLabel}`;
 
-            if (/save|repin|收藏|保存/.test(combined)) {
-              favorite_count = Math.max(favorite_count, count);
-            } else if (/comment|评论/.test(combined)) {
-              comment_count = Math.max(comment_count, count);
-            } else if (/like|react|赞|love/.test(combined)) {
-              like_count = Math.max(like_count, count);
+            if (/save|repin|saved|收藏|保存|ulozeni|uložení/.test(combined)) {
+              favoriteCount = Math.max(favoriteCount, count);
+            } else if (/comment|评论|留言|komentar|komentář/.test(combined)) {
+              commentCount = Math.max(commentCount, count);
+            } else if (/like|react|love|点赞|赞|libi|líbí/.test(combined)) {
+              likeCount = Math.max(likeCount, count);
             }
+          }
+
+          if (!likeCount && favoriteCount) {
+            likeCount = favoriteCount;
+          }
+          if (!favoriteCount && likeCount) {
+            favoriteCount = likeCount;
           }
 
           results.push({
@@ -427,9 +483,9 @@ class PinterestAdapter extends BaseAdapter {
             source_page_url: window.location.href,
             width: img.naturalWidth || null,
             height: img.naturalHeight || null,
-            like_count,
-            favorite_count,
-            comment_count,
+            like_count: likeCount,
+            favorite_count: favoriteCount,
+            comment_count: commentCount,
             share_count: 0,
           });
         }

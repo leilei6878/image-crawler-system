@@ -213,9 +213,9 @@ router.post('/report', async (req, res) => {
           [task.job_id, host_id || task.assigned_host_id, page_task_id,
            img.image_url, img.detail_page_url || null, img.source_page_url || null,
            img.author_name || null, img.author_url || null,
-           img.width || null, img.height || null,
-           img.like_count || null, img.favorite_count || null,
-           img.comment_count || null, img.share_count || null]
+           img.width ?? null, img.height ?? null,
+           img.like_count ?? null, img.favorite_count ?? null,
+           img.comment_count ?? null, img.share_count ?? null]
         );
         savedCount++;
       }

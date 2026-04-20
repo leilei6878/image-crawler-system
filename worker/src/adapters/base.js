@@ -40,12 +40,12 @@ class BaseAdapter {
       source_page_url: raw.source_page_url || null,
       author_name: raw.author_name || raw.author || null,
       author_url: raw.author_url || null,
-      width: raw.width || null,
-      height: raw.height || null,
-      like_count: raw.like_count || null,
-      favorite_count: raw.favorite_count || null,
-      comment_count: raw.comment_count || null,
-      share_count: raw.share_count || null,
+      width: raw.width ?? null,
+      height: raw.height ?? null,
+      like_count: raw.like_count ?? null,
+      favorite_count: raw.favorite_count ?? null,
+      comment_count: raw.comment_count ?? null,
+      share_count: raw.share_count ?? null,
     };
   }
 }

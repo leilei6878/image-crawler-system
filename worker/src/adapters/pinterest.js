@@ -197,6 +197,9 @@ class PinterestAdapter extends BaseAdapter {
     console.log(`[Pinterest] images after scroll: ${afterScrollCount}`);
 
     const primaryPin = await this.extractPrimaryPin(page, task);
+    if (primaryPin) {
+      console.log(`[Pinterest] detail metrics: like=${primaryPin.like_count || 0} fav=${primaryPin.favorite_count || 0} comment=${primaryPin.comment_count || 0} share=${primaryPin.share_count || 0}`);
+    }
     console.log(`[Pinterest] primary image extracted: ${primaryPin ? 1 : 0}; auto expansion disabled`);
 
     const images = primaryPin ? [this.normalizeImage(primaryPin)] : [];
@@ -265,8 +268,44 @@ class PinterestAdapter extends BaseAdapter {
         return max;
       }
 
+      function extractRelayPinData(pinId) {
+        const requests = window.__PWS_RELAY_SSR_REQUESTS__ || {};
+        const entries = Object.entries(requests);
+
+        for (const [requestKey, requestValue] of entries) {
+          if (pinId && !String(requestKey).includes(pinId)) continue;
+
+          const pinData =
+            requestValue &&
+            requestValue.response &&
+            requestValue.response.data &&
+            requestValue.response.data.v3GetPinQueryv2 &&
+            requestValue.response.data.v3GetPinQueryv2.data;
+
+          if (pinData) {
+            return pinData;
+          }
+        }
+
+        for (const requestValue of Object.values(requests)) {
+          const pinData =
+            requestValue &&
+            requestValue.response &&
+            requestValue.response.data &&
+            requestValue.response.data.v3GetPinQueryv2 &&
+            requestValue.response.data.v3GetPinQueryv2.data;
+
+          if (pinData) {
+            return pinData;
+          }
+        }
+
+        return null;
+      }
+
       const pinIdMatch = String(taskUrl || window.location.href).match(/\/pin\/(\d+)/i);
       const pinId = pinIdMatch ? pinIdMatch[1] : null;
+      const relayPinData = extractRelayPinData(pinId);
 
       const candidates = Array.from(document.querySelectorAll('img[src*="pinimg.com"]'))
         .map(img => ({
@@ -280,10 +319,20 @@ class PinterestAdapter extends BaseAdapter {
         )
         .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
 
-      const best = candidates[0];
-      if (!best) return null;
+      const best = candidates[0] || null;
 
-      let imageUrl = best.img.currentSrc || best.img.src || '';
+      let imageUrl = best ? (best.img.currentSrc || best.img.src || '') : '';
+      if (!imageUrl && relayPinData) {
+        imageUrl =
+          (relayPinData.images_orig && relayPinData.images_orig.url) ||
+          relayPinData.imageLargeUrl ||
+          (relayPinData.images_736x && relayPinData.images_736x.url) ||
+          (relayPinData.images_564x && relayPinData.images_564x.url) ||
+          (relayPinData.images_474x && relayPinData.images_474x.url) ||
+          '';
+      }
+      if (!imageUrl) return null;
+
       if (imageUrl.includes('236x')) imageUrl = imageUrl.replace('236x', 'originals');
       else if (imageUrl.includes('474x')) imageUrl = imageUrl.replace('474x', 'originals');
       else if (imageUrl.includes('564x')) imageUrl = imageUrl.replace('564x', 'originals');
@@ -308,6 +357,9 @@ class PinterestAdapter extends BaseAdapter {
         .join('\n');
 
       let favoriteCount = Math.max(
+        relayPinData && relayPinData.aggregatedPinData && relayPinData.aggregatedPinData.aggregatedStats
+          ? parseCount(relayPinData.aggregatedPinData.aggregatedStats.saves)
+          : 0,
         extractMetric(textSamples, [
           'save',
           'saves',
@@ -336,6 +388,7 @@ class PinterestAdapter extends BaseAdapter {
       );
 
       let commentCount = Math.max(
+        relayPinData ? parseCount(relayPinData.commentCount || relayPinData.commentsCount) : 0,
         extractMetric(textSamples, [
           'comment',
           'comments',
@@ -355,6 +408,7 @@ class PinterestAdapter extends BaseAdapter {
       );
 
       let shareCount = Math.max(
+        relayPinData ? parseCount(relayPinData.shareCount || relayPinData.sharesCount) : 0,
         extractMetric(textSamples, [
           'share',
           'shares',
@@ -371,6 +425,7 @@ class PinterestAdapter extends BaseAdapter {
       );
 
       let likeCount = Math.max(
+        relayPinData ? parseCount(relayPinData.likeCount || relayPinData.likesCount || relayPinData.repinCount) : 0,
         extractMetric(textSamples, [
           'like',
           'likes',
@@ -396,14 +451,45 @@ class PinterestAdapter extends BaseAdapter {
         favoriteCount = likeCount;
       }
 
-      const pinLink = best.img.closest('a[href*="/pin/"]');
+      const pinLink = best ? best.img.closest('a[href*="/pin/"]') : null;
+      const detailPageUrl = pinLink ? pinLink.href : taskUrl;
+      const authorName =
+        (relayPinData && relayPinData.closeupAttribution && relayPinData.closeupAttribution.fullName) ||
+        (relayPinData && relayPinData.nativeCreator && relayPinData.nativeCreator.fullName) ||
+        (relayPinData && relayPinData.pinner && relayPinData.pinner.username) ||
+        null;
+      const authorUrl =
+        (relayPinData && relayPinData.pinner && relayPinData.pinner.username)
+          ? `https://www.pinterest.com/${relayPinData.pinner.username}/`
+          : null;
+      const normalizedWidth =
+        (relayPinData && relayPinData.images_orig && relayPinData.images_orig.width) ||
+        (relayPinData && relayPinData.images_736x && relayPinData.images_736x.width) ||
+        (relayPinData && relayPinData.images_564x && relayPinData.images_564x.width) ||
+        (relayPinData && relayPinData.images_474x && relayPinData.images_474x.width) ||
+        (relayPinData && relayPinData.images_236x && relayPinData.images_236x.width) ||
+        (relayPinData && relayPinData.images_170x && relayPinData.images_170x.width) ||
+        (best && best.img && best.img.naturalWidth) ||
+        (best && best.rect ? Math.round(best.rect.width) : null) ||
+        null;
+      const normalizedHeight =
+        (relayPinData && relayPinData.images_orig && relayPinData.images_orig.height) ||
+        (relayPinData && relayPinData.images_736x && relayPinData.images_736x.height) ||
+        (relayPinData && relayPinData.images_564x && relayPinData.images_564x.height) ||
+        (relayPinData && relayPinData.images_474x && relayPinData.images_474x.height) ||
+        (relayPinData && relayPinData.images_236x && relayPinData.images_236x.height) ||
+        (best && best.img && best.img.naturalHeight) ||
+        (best && best.rect ? Math.round(best.rect.height) : null) ||
+        null;
 
       return {
         image_url: imageUrl,
-        detail_page_url: pinLink ? pinLink.href : taskUrl,
+        detail_page_url: detailPageUrl,
         source_page_url: window.location.href,
-        width: best.img.naturalWidth || Math.round(best.rect.width) || null,
-        height: best.img.naturalHeight || Math.round(best.rect.height) || null,
+        author_name: authorName,
+        author_url: authorUrl,
+        width: normalizedWidth,
+        height: normalizedHeight,
         like_count: likeCount || 0,
         favorite_count: favoriteCount || 0,
         comment_count: commentCount || 0,

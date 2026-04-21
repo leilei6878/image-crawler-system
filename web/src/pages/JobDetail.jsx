@@ -15,6 +15,7 @@ export default function JobDetail({ showToast }) {
   const [expandHostId, setExpandHostId] = useState('');
   const [hosts, setHosts] = useState([]);
   const [expanding, setExpanding] = useState(false);
+  const [downloading, setDownloading] = useState('');
   const defaultImageQuery = {
     sort_by: 'created_at',
     sort_order: 'desc',
@@ -74,6 +75,39 @@ export default function JobDetail({ showToast }) {
     setImgPage(1);
     setImageQuery(defaultImageQuery);
     setImageQueryDraft(defaultImageQuery);
+  }
+
+  async function handleDownload(scope) {
+    setDownloading(scope);
+    try {
+      const res = await jobApi.downloadImages(id, {
+        scope,
+        img_sort_by: imageQuery.sort_by,
+        img_sort_order: imageQuery.sort_order,
+        img_min_like: imageQuery.min_like,
+        img_min_favorite: imageQuery.min_favorite,
+        img_min_comment: imageQuery.min_comment,
+        img_min_share: imageQuery.min_share,
+        img_expand_status: imageQuery.expand_status,
+      });
+
+      const contentDisposition = res.headers['content-disposition'] || '';
+      const fileNameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      const fileName = fileNameMatch?.[1] || `job_${id}_${scope}.zip`;
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'application/zip' }));
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      showToast(scope === 'all' ? '已开始下载全部图片' : '已开始下载筛选结果', 'success');
+    } catch (err) {
+      showToast(err.response?.data?.error || '批量下载失败', 'error');
+    } finally {
+      setDownloading('');
+    }
   }
 
   async function handleJobAction(action) {
@@ -332,7 +366,21 @@ export default function JobDetail({ showToast }) {
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   当前排序：{sortOptions.find(opt => opt.value === (image_query?.sort_by || imageQuery.sort_by))?.label || '按采集时间'} / {image_query?.sort_order === 'asc' ? '升序' : '降序'}
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDownload('all')}
+                    disabled={downloading !== ''}
+                  >
+                    {downloading === 'all' ? '下载中...' : '下载全部'}
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDownload('filtered')}
+                    disabled={downloading !== ''}
+                  >
+                    {downloading === 'filtered' ? '下载中...' : '下载筛选结果'}
+                  </button>
                   <button className="btn btn-outline" onClick={resetImageQuery}>重置</button>
                   <button className="btn btn-primary" onClick={applyImageQuery}>应用筛选</button>
                 </div>

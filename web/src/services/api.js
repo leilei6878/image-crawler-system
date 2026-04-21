@@ -8,6 +8,7 @@ const api = axios.create({
 export const jobApi = {
   list: (params) => api.get('/jobs', { params }),
   detail: (id, params) => api.get(`/jobs/${id}`, { params }),
+  downloadImages: (id, params) => api.get(`/jobs/${id}/download-images`, { params, responseType: 'blob' }),
   create: (data) => api.post('/jobs', data),
   pause: (id) => api.post(`/jobs/${id}/pause`),
   resume: (id) => api.post(`/jobs/${id}/resume`),

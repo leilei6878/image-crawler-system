@@ -3,16 +3,39 @@ const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
 
+async function getHeartbeatTimeoutSeconds(dbConn) {
+  const [settings] = await dbConn.execute(
+    `SELECT setting_value FROM system_settings WHERE setting_key = 'heartbeat_timeout_seconds'`
+  );
+  return settings.length > 0 ? parseInt(settings[0].setting_value, 10) : 90;
+}
+
+function resolveHostStatus(host, timeoutSeconds) {
+  if (host.status === 'deleted') return 'deleted';
+  if (host.status === 'disabled') return 'disabled';
+  if (!host.last_heartbeat_at) return 'offline';
+
+  const heartbeatAt = new Date(host.last_heartbeat_at).getTime();
+  if (!Number.isFinite(heartbeatAt)) return 'offline';
+
+  const staleMs = Math.max(timeoutSeconds, 30) * 1000;
+  return Date.now() - heartbeatAt > staleMs ? 'offline' : 'online';
+}
+
 router.get('/', async (req, res) => {
   try {
+    const timeoutSeconds = await getHeartbeatTimeoutSeconds(db);
     const [rows] = await db.execute(
       `SELECT h.*,
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status IN ('pending','retry_waiting')) as real_pending,
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status = 'running') as real_running
-       FROM hosts h ORDER BY h.created_at ASC`
+       FROM hosts h
+       WHERE h.status != 'deleted'
+       ORDER BY h.created_at ASC`
     );
     const data = rows.map(h => ({
       ...h,
+      status: resolveHostStatus(h, timeoutSeconds),
       pending_count: parseInt(h.real_pending) || 0,
       running_count: parseInt(h.real_running) || 0,
       available_slots: Math.max(0, h.max_concurrency - (parseInt(h.real_running) || 0)),
@@ -83,6 +106,49 @@ router.put('/:id', async (req, res) => {
     res.json({ message: '主机更新成功' });
   } catch (err) {
     res.status(500).json({ error: '更新主机失败' });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { id } = req.params;
+
+    const [hosts] = await conn.execute('SELECT id, name, host_key FROM hosts WHERE id = ?', [id]);
+    if (hosts.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: '主机不存在' });
+    }
+
+    const [activeTasks] = await conn.execute(
+      `SELECT COUNT(*) as cnt
+       FROM page_tasks
+       WHERE assigned_host_id = ?
+         AND status IN ('pending', 'retry_waiting', 'running', 'assigned')`,
+      [id]
+    );
+    if (parseInt(activeTasks[0].cnt, 10) > 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: '该主机仍有未完成任务，不能删除' });
+    }
+
+    await conn.execute('DELETE FROM host_heartbeats WHERE host_id = ?', [id]);
+    await conn.execute('DELETE FROM hosts WHERE id = ?', [id]);
+    await conn.commit();
+
+    await logger.info('host_delete', `删除主机 #${id}`, {
+      hostId: parseInt(id, 10),
+      hostKey: hosts[0].host_key,
+      hostName: hosts[0].name,
+    });
+    res.json({ message: '主机已删除' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('[Hosts] 删除主机失败:', err);
+    res.status(500).json({ error: '删除主机失败', message: err.message });
+  } finally {
+    conn.release();
   }
 });
 

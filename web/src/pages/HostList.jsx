@@ -122,6 +122,17 @@ export default function HostList({ showToast }) {
     }
   }
 
+  async function handleDeleteHost(host) {
+    if (!confirm(`确定删除主机“${host.name}”吗？如果对应 worker 还在运行，它会再次自动注册。`)) return;
+    try {
+      await hostApi.delete(host.id);
+      showToast('主机已删除', 'success');
+      loadHosts();
+    } catch (err) {
+      showToast(err.response?.data?.error || '删除主机失败', 'error');
+    }
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -191,6 +202,7 @@ export default function HostList({ showToast }) {
                         onClick={() => toggleStatus(host)}>
                         {host.status === 'disabled' ? '启用' : '禁用'}
                       </button>
+                      <button className="btn btn-xs btn-danger" onClick={() => handleDeleteHost(host)}>删除</button>
                     </div>
                   </div>
                 );

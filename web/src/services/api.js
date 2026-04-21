@@ -25,6 +25,7 @@ export const hostApi = {
   detail: (id) => api.get(`/hosts/${id}`),
   create: (data) => api.post('/hosts', data),
   update: (id, data) => api.put(`/hosts/${id}`, data),
+  delete: (id) => api.delete(`/hosts/${id}`),
   heartbeat: (data) => api.post('/hosts/heartbeat', data),
 };
 

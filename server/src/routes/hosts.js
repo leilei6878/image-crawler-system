@@ -121,7 +121,6 @@ router.post('/heartbeat', async (req, res) => {
       const updateFields = ['status = \'online\'', 'last_heartbeat_at = NOW()', 'updated_at = NOW()'];
       const updateParams = [];
 
-      if (max_concurrency) { updateFields.push('max_concurrency = ?'); updateParams.push(max_concurrency); }
       if (host_name) { updateFields.push('name = ?'); updateParams.push(host_name); }
       if (supported_sites.length > 0) { updateFields.push('supported_sites = ?'); updateParams.push(JSON.stringify(supported_sites)); }
       if (ip_address) { updateFields.push('ip_info = ?'); updateParams.push(ip_address); }
@@ -191,6 +190,7 @@ router.post('/heartbeat', async (req, res) => {
       res.json({
         host_id: host.id,
         message: '心跳更新成功',
+        max_concurrency: parseInt(host.max_concurrency, 10) || 1,
         pending_count: parseInt(counts[0].pending) || 0,
         running_count: parseInt(counts[0].running) || 0
       });

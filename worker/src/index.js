@@ -8,8 +8,8 @@ const { passesFilter } = require('./filter');
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 const HOST_KEY = process.env.HOST_KEY || 'dev-host-key-001';
 const HOST_NAME = process.env.HOST_NAME || 'LocalWorker';
-const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3');
-const PULL_INTERVAL = parseInt(process.env.PULL_INTERVAL_MS || '5000');
+let maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
+const PULL_INTERVAL = parseInt(process.env.PULL_INTERVAL_MS || '5000', 10);
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || './screenshots';
 
 const api = axios.create({ baseURL: SERVER_URL, timeout: 30000 });
@@ -30,27 +30,39 @@ function withTimeout(promise, timeoutMs, label) {
   });
 }
 
-async function heartbeat() {
+async function heartbeat(pool) {
   try {
     const res = await api.post('/api/hosts/heartbeat', {
       host_key: HOST_KEY,
       host_name: HOST_NAME,
-      max_concurrency: MAX_CONCURRENCY,
+      max_concurrency: maxConcurrency,
       supported_sites: ['pinterest', 'behance', 'unsplash', 'dribbble', 'generic'],
       running_count: running,
     });
+
     if (res.data.host_id) {
       hostId = res.data.host_id;
     }
+
+    const serverConcurrency = parseInt(res.data.max_concurrency, 10);
+    if (serverConcurrency && serverConcurrency !== maxConcurrency) {
+      const previous = maxConcurrency;
+      maxConcurrency = serverConcurrency;
+      if (pool) {
+        await pool.resize(maxConcurrency);
+      }
+      console.log(`[Worker] Updated max concurrency from server: ${previous} -> ${maxConcurrency}`);
+    }
+
     console.log(`[Heartbeat] OK - hostId=${hostId} running=${running}`);
   } catch (err) {
-    console.error('[Heartbeat] 失败:', err.message);
+    console.error('[Heartbeat] failed:', err.message);
   }
 }
 
 async function pullAndExecute(pool) {
   if (!hostId) return;
-  const available = Math.max(0, MAX_CONCURRENCY - running);
+  const available = Math.max(0, maxConcurrency - running);
   if (available <= 0) return;
 
   try {
@@ -62,14 +74,14 @@ async function pullAndExecute(pool) {
     const tasks = res.data.tasks || [];
     if (tasks.length === 0) return;
 
-    console.log(`[Worker] 拉取到 ${tasks.length} 个任务`);
+    console.log(`[Worker] Pulled ${tasks.length} task(s)`);
 
     for (const task of tasks) {
       running++;
       executeTask(pool, task).finally(() => { running--; });
     }
   } catch (err) {
-    console.error('[Worker] 拉取任务失败:', err.message);
+    console.error('[Worker] pull failed:', err.message);
   }
 }
 
@@ -77,9 +89,9 @@ async function executeTask(pool, task) {
   const browser = await pool.acquire();
   let page;
   try {
-    console.log(`[Task] 开始执行 #${task.id} - ${task.task_type} - ${task.target_url}`);
+    console.log(`[Task] Start #${task.id} - ${task.task_type} - ${task.target_url}`);
     if (task.filters) {
-      console.log(`[Task] 筛选规则: ${JSON.stringify(task.filters)}`);
+      console.log(`[Task] Filters: ${JSON.stringify(task.filters)}`);
     }
 
     const context = await browser.newContext({
@@ -113,13 +125,14 @@ async function executeTask(pool, task) {
           filtered.push(img);
         }
       }
+
       if (filtered.length > 0) {
-        console.log(`[Filter] 筛选: ${totalBeforeFilter}张 -> 通过${passed.length}张, 过滤${filtered.length}张`);
+        console.log(`[Filter] ${totalBeforeFilter} -> passed ${passed.length}, filtered ${filtered.length}`);
         for (const f of filtered.slice(0, 5)) {
-          console.log(`[Filter]   过滤: like=${f.like_count || 0} fav=${f.favorite_count || 0} w=${f.width || '?'} h=${f.height || '?'}`);
+          console.log(`[Filter]   filtered: like=${f.like_count || 0} fav=${f.favorite_count || 0} w=${f.width || '?'} h=${f.height || '?'}`);
         }
         if (filtered.length > 5) {
-          console.log(`[Filter]   ...还有${filtered.length - 5}张被过滤`);
+          console.log(`[Filter]   ...and ${filtered.length - 5} more`);
         }
       }
       images = passed;
@@ -129,13 +142,13 @@ async function executeTask(pool, task) {
       page_task_id: task.id,
       host_id: hostId,
       status: 'success',
-      images: images,
+      images,
       new_page_tasks: result.new_tasks || [],
     });
 
-    console.log(`[Task] 完成 #${task.id} - 提取:${totalBeforeFilter} 上报:${images.length} 新任务:${(result.new_tasks || []).length}`);
+    console.log(`[Task] Done #${task.id} - extracted:${totalBeforeFilter} reported:${images.length} new_tasks:${(result.new_tasks || []).length}`);
   } catch (err) {
-    console.error(`[Task] 失败 #${task.id}:`, err.message);
+    console.error(`[Task] Failed #${task.id}:`, err.message);
     try {
       await api.post('/api/tasks/report', {
         page_task_id: task.id,
@@ -146,7 +159,7 @@ async function executeTask(pool, task) {
         new_page_tasks: [],
       });
     } catch (reportErr) {
-      console.error('[Task] 回传失败:', reportErr.message);
+      console.error('[Task] report failed:', reportErr.message);
     }
   } finally {
     if (page) {
@@ -159,23 +172,27 @@ async function executeTask(pool, task) {
 }
 
 async function main() {
-  console.log(`[Worker] 启动 - HOST_KEY=${HOST_KEY} MAX_CONCURRENCY=${MAX_CONCURRENCY}`);
-  const pool = new BrowserPool(MAX_CONCURRENCY);
+  console.log(`[Worker] Starting - HOST_KEY=${HOST_KEY} MAX_CONCURRENCY=${maxConcurrency}`);
+  const pool = new BrowserPool(maxConcurrency);
   await pool.init();
 
-  await heartbeat();
-  setInterval(heartbeat, 30000);
+  await heartbeat(pool);
+  setInterval(() => {
+    heartbeat(pool).catch(err => {
+      console.error('[Heartbeat] timer failed:', err.message);
+    });
+  }, 30000);
 
   setInterval(() => pullAndExecute(pool), PULL_INTERVAL);
 
   process.on('SIGTERM', async () => {
-    console.log('[Worker] 收到SIGTERM，正在关闭...');
+    console.log('[Worker] Received SIGTERM, shutting down...');
     await pool.destroy();
     process.exit(0);
   });
 }
 
 main().catch(err => {
-  console.error('[Worker] 启动失败:', err);
+  console.error('[Worker] Startup failed:', err);
   process.exit(1);
 });

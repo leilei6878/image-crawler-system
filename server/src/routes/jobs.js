@@ -72,6 +72,14 @@ function sanitizeFileName(value) {
     .slice(0, 80);
 }
 
+function toAsciiFileName(value, fallback = 'images') {
+  const ascii = sanitizeFileName(value)
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ascii || fallback;
+}
+
 function resolveImageExtension(url, fallback = '.jpg') {
   try {
     const pathname = new URL(url).pathname || '';
@@ -225,9 +233,13 @@ router.get('/:id/download-images', async (req, res) => {
       return res.status(400).json({ error: '当前条件下没有可下载的图片' });
     }
 
-    const archiveName = `${sanitizeFileName(jobs[0].name || `job_${id}`)}_${scope}.zip`;
+    const rawName = `${sanitizeFileName(jobs[0].name || `job_${id}`)}_${scope}.zip`;
+    const asciiName = toAsciiFileName(rawName, `job_${id}_${scope}.zip`);
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${archiveName}"`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`
+    );
 
     const archive = archiver('zip', { zlib: { level: 9 } });
     archive.on('error', err => {

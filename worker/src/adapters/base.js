@@ -18,8 +18,8 @@ class BaseAdapter {
       };
     }
 
-    const intervalMs = Math.max(1200, Math.floor(totalMs / totalRounds));
-    const deadline = Date.now() + totalMs;
+    const startedAt = Date.now();
+    const targetRoundMs = Math.max(1200, Math.floor(totalMs / totalRounds));
 
     let lastHeight = await page.evaluate(() => document.body.scrollHeight);
     let noChangeCount = 0;
@@ -28,11 +28,6 @@ class BaseAdapter {
     let stoppedReason = 'completed';
 
     for (let round = 0; round < totalRounds; round++) {
-      if (Date.now() >= deadline) {
-        stoppedReason = 'deadline_reached';
-        break;
-      }
-
       executedRounds++;
 
       await page.evaluate(() => {
@@ -54,6 +49,12 @@ class BaseAdapter {
         changedRounds++;
       }
       lastHeight = newHeight;
+
+      const expectedElapsedMs = Math.min(totalMs, (round + 1) * targetRoundMs);
+      const waitMs = startedAt + expectedElapsedMs - Date.now();
+      if (waitMs > 0) {
+        await page.waitForTimeout(waitMs);
+      }
     }
 
     return {

@@ -17,22 +17,6 @@ function passesMinThreshold(rawValue, rawThreshold) {
   return value >= threshold;
 }
 
-function getEffectiveLikeValue(img, siteType) {
-  const likeValue = parsePositiveInt(img.like_count);
-  if (likeValue !== null && likeValue > 0) {
-    return likeValue;
-  }
-
-  if (siteType === 'pinterest') {
-    const favoriteValue = parsePositiveInt(img.favorite_count);
-    if (favoriteValue !== null) {
-      return favoriteValue;
-    }
-  }
-
-  return likeValue;
-}
-
 function passesFilter(img, filter, siteType) {
   if (!filter) return true;
   const mode = filter.logic_mode || 'and';
@@ -52,7 +36,7 @@ function passesFilter(img, filter, siteType) {
   }
 
   const checks = [];
-  checks.push(passesMinThreshold(getEffectiveLikeValue(img, siteType), filter.min_like));
+  checks.push(passesMinThreshold(img.like_count, filter.min_like));
   checks.push(passesMinThreshold(img.favorite_count, filter.min_favorite));
   checks.push(passesMinThreshold(img.comment_count, filter.min_comment));
   checks.push(passesMinThreshold(img.share_count, filter.min_share));
@@ -68,6 +52,5 @@ function passesFilter(img, filter, siteType) {
 module.exports = {
   parsePositiveInt,
   passesMinThreshold,
-  getEffectiveLikeValue,
   passesFilter,
 };

@@ -93,8 +93,8 @@ export default function JobDetail({ showToast }) {
 
       const contentDisposition = res.headers['content-disposition'] || '';
       const fileNameMatch = contentDisposition.match(/filename="([^"]+)"/);
-      const fileName = fileNameMatch?.[1] || `job_${id}_${scope}.zip`;
-      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'application/zip' }));
+      const fileName = fileNameMatch?.[1] || `job_${id}_${scope}_image_urls.txt`;
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'text/plain;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = blobUrl;
       link.download = fileName;
@@ -102,9 +102,9 @@ export default function JobDetail({ showToast }) {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(blobUrl);
-      showToast(scope === 'all' ? '已开始下载全部图片' : '已开始下载筛选结果', 'success');
+      showToast(scope === 'all' ? '已导出全部图片 URL' : '已导出筛选结果 URL', 'success');
     } catch (err) {
-      showToast(err.response?.data?.error || '批量下载失败', 'error');
+      showToast(err.response?.data?.error || '批量导出 URL 失败', 'error');
     } finally {
       setDownloading('');
     }
@@ -372,14 +372,14 @@ export default function JobDetail({ showToast }) {
                     onClick={() => handleDownload('all')}
                     disabled={downloading !== ''}
                   >
-                    {downloading === 'all' ? '下载中...' : '下载全部'}
+                    {downloading === 'all' ? '导出中...' : '导出全部URL'}
                   </button>
                   <button
                     className="btn btn-outline"
                     onClick={() => handleDownload('filtered')}
                     disabled={downloading !== ''}
                   >
-                    {downloading === 'filtered' ? '下载中...' : '下载筛选结果'}
+                    {downloading === 'filtered' ? '导出中...' : '导出筛选URL'}
                   </button>
                   <button className="btn btn-outline" onClick={resetImageQuery}>重置</button>
                   <button className="btn btn-primary" onClick={applyImageQuery}>应用筛选</button>

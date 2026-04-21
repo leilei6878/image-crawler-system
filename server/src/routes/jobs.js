@@ -1,6 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const archiver = require('archiver');
 const db = require('../db');
 const logger = require('../services/logger');
 
@@ -78,16 +77,6 @@ function toAsciiFileName(value, fallback = 'images') {
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
   return ascii || fallback;
-}
-
-function resolveImageExtension(url, fallback = '.jpg') {
-  try {
-    const pathname = new URL(url).pathname || '';
-    const match = pathname.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg)$/i);
-    return match ? `.${match[1].toLowerCase()}` : fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 router.post('/', async (req, res) => {
@@ -222,96 +211,35 @@ router.get('/:id/download-images', async (req, res) => {
     const params = scope === 'all' ? [id] : query.imageParams;
 
     const [images] = await db.execute(
-      `SELECT id, image_url, author_name, width, height, like_count, favorite_count, comment_count, share_count, expand_status, detail_page_url
+      `SELECT id, image_url
        FROM images
        WHERE ${whereSql}
        ORDER BY ${query.sortExpr} ${query.sortOrder}, id DESC`,
       params
     );
 
-    if (images.length === 0) {
-      return res.status(400).json({ error: '当前条件下没有可下载的图片' });
+    const urls = Array.from(new Set(
+      images
+        .map(image => image.image_url)
+        .filter(url => typeof url === 'string' && url.trim() !== '')
+    ));
+
+    if (urls.length === 0) {
+      return res.status(400).json({ error: '当前条件下没有可导出的图片 URL' });
     }
 
-    const rawName = `${sanitizeFileName(jobs[0].name || `job_${id}`)}_${scope}.zip`;
-    const asciiName = toAsciiFileName(rawName, `job_${id}_${scope}.zip`);
-    res.setHeader('Content-Type', 'application/zip');
+    const rawName = `${sanitizeFileName(jobs[0].name || `job_${id}`)}_${scope}_image_urls.txt`;
+    const asciiName = toAsciiFileName(rawName, `job_${id}_${scope}_image_urls.txt`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`
     );
-
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    archive.on('error', err => {
-      throw err;
-    });
-    archive.pipe(res);
-
-    const manifest = [];
-
-    for (let index = 0; index < images.length; index++) {
-      const image = images[index];
-      const record = {
-        id: image.id,
-        image_url: image.image_url,
-        author_name: image.author_name,
-        width: image.width,
-        height: image.height,
-        like_count: image.like_count,
-        favorite_count: image.favorite_count,
-        comment_count: image.comment_count,
-        share_count: image.share_count,
-        expand_status: image.expand_status,
-        detail_page_url: image.detail_page_url,
-        download_status: 'skipped',
-      };
-
-      if (!image.image_url) {
-        record.reason = 'missing image_url';
-        manifest.push(record);
-        continue;
-      }
-
-      try {
-        const response = await fetch(image.image_url);
-        if (!response.ok) {
-          record.reason = `http_${response.status}`;
-          manifest.push(record);
-          continue;
-        }
-
-        const arrayBuffer = await response.arrayBuffer();
-        const ext = resolveImageExtension(image.image_url);
-        const baseName = sanitizeFileName(
-          image.author_name || `image_${String(index + 1).padStart(3, '0')}_${image.id}`
-        );
-        const fileName = `${String(index + 1).padStart(3, '0')}_${baseName}_${image.id}${ext}`;
-
-        archive.append(Buffer.from(arrayBuffer), { name: fileName });
-        record.download_status = 'ok';
-        record.file_name = fileName;
-        manifest.push(record);
-      } catch (err) {
-        record.reason = err.message;
-        manifest.push(record);
-      }
-    }
-
-    archive.append(JSON.stringify({
-      job_id: parseInt(id, 10),
-      job_name: jobs[0].name,
-      scope,
-      image_count: images.length,
-      query: scope === 'all' ? { scope: 'all' } : query.imageQuery,
-      generated_at: new Date().toISOString(),
-      images: manifest,
-    }, null, 2), { name: 'manifest.json' });
-
-    await archive.finalize();
+    res.send(`${urls.join('\n')}\n`);
   } catch (err) {
-    console.error('[Jobs] 下载图片失败:', err);
+    console.error('[Jobs] 导出图片 URL 失败:', err);
     if (!res.headersSent) {
-      res.status(500).json({ error: '下载图片失败', message: err.message });
+      res.status(500).json({ error: '导出图片 URL 失败', message: err.message });
     } else {
       res.end();
     }

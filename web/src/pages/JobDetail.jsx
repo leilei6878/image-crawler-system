@@ -16,6 +16,8 @@ export default function JobDetail({ showToast }) {
   const [hosts, setHosts] = useState([]);
   const [expanding, setExpanding] = useState(false);
   const [downloading, setDownloading] = useState('');
+  const [previewImage, setPreviewImage] = useState(null);
+  const [deletingImageId, setDeletingImageId] = useState(null);
   const defaultImageQuery = {
     sort_by: 'created_at',
     sort_order: 'desc',
@@ -143,6 +145,25 @@ export default function JobDetail({ showToast }) {
       showToast(err.response?.data?.error || '扩采失败', 'error');
     } finally {
       setExpanding(false);
+    }
+  }
+
+  async function handleDeleteImage(image) {
+    if (!image?.id) return;
+    if (!confirm('确定删除这张图片？删除后会从当前任务结果中移除。')) return;
+
+    setDeletingImageId(image.id);
+    try {
+      await imageApi.delete(image.id);
+      if (previewImage?.id === image.id) {
+        setPreviewImage(null);
+      }
+      showToast('图片已删除', 'success');
+      loadData();
+    } catch (err) {
+      showToast(err.response?.data?.error || '删除图片失败', 'error');
+    } finally {
+      setDeletingImageId(null);
     }
   }
 
@@ -397,6 +418,8 @@ export default function JobDetail({ showToast }) {
                       <img
                         src={img.image_url}
                         alt={img.author_name || '图片'}
+                        className="image-card-preview"
+                        onClick={() => setPreviewImage(img)}
                         onError={e => { e.target.style.display = 'none'; }}
                       />
                       <div className="image-card-info">
@@ -438,6 +461,13 @@ export default function JobDetail({ showToast }) {
                             详情页
                           </a>
                         )}
+                        <button
+                          className="btn btn-xs btn-danger"
+                          onClick={() => handleDeleteImage(img)}
+                          disabled={deletingImageId === img.id}
+                        >
+                          {deletingImageId === img.id ? '删除中..' : '删除'}
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -547,6 +577,37 @@ export default function JobDetail({ showToast }) {
               <button className="btn btn-primary" onClick={handleExpand} disabled={expanding}>
                 {expanding ? '提交中...' : '确认扩采'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewImage && (
+        <div className="modal-overlay" onClick={() => setPreviewImage(null)}>
+          <div className="modal image-preview-modal" onClick={e => e.stopPropagation()}>
+            <div className="image-preview-header">
+              <div>
+                {previewImage.author_name && (
+                  <div className="image-preview-title">{previewImage.author_name}</div>
+                )}
+                <div className="image-preview-meta">
+                  <span>点赞: {formatMetric(previewImage.like_count)}</span>
+                  <span>收藏: {formatMetric(previewImage.favorite_count)}</span>
+                  <span>评论: {formatMetric(previewImage.comment_count)}</span>
+                  <span>分享: {formatMetric(previewImage.share_count)}</span>
+                  {previewImage.width && previewImage.height && (
+                    <span>{previewImage.width}x{previewImage.height}</span>
+                  )}
+                </div>
+              </div>
+              <button className="btn btn-outline btn-sm" onClick={() => setPreviewImage(null)}>关闭</button>
+            </div>
+            <div className="image-preview-body">
+              <img
+                src={previewImage.image_url}
+                alt={previewImage.author_name || '图片预览'}
+                className="image-preview-image"
+              />
             </div>
           </div>
         </div>

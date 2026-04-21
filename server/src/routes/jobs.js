@@ -27,7 +27,7 @@ function buildImageQuery(req, jobId) {
   const sortOrder = String(img_sort_order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
   const sortExpr = sortField === 'created_at' ? 'created_at' : `COALESCE(${sortField}, 0)`;
 
-  const imageWhere = ['job_id = ?'];
+  const imageWhere = ['job_id = ?', "COALESCE(status, '') != 'deleted'"];
   const imageParams = [jobId];
 
   const appendMinFilter = (value, column) => {
@@ -207,7 +207,9 @@ router.get('/:id/download-images', async (req, res) => {
     }
 
     const query = buildImageQuery(req, id);
-    const whereSql = scope === 'all' ? 'job_id = ?' : query.imageWhereSql;
+    const whereSql = scope === 'all'
+      ? "job_id = ? AND COALESCE(status, '') != 'deleted'"
+      : query.imageWhereSql;
     const params = scope === 'all' ? [id] : query.imageParams;
 
     const [images] = await db.execute(

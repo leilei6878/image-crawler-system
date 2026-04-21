@@ -135,6 +135,46 @@ router.post('/heartbeat', async (req, res) => {
         [host.id, cpu_usage || null, memory_usage || null, running_count, host.pending_count || 0, ip_address || null]
       );
 
+      if (parseInt(running_count, 10) === 0) {
+        const [staleTasks] = await conn.execute(
+          `SELECT pt.id, pt.retry_count, IFNULL(j.max_retry_count, 3) as max_retry_count
+           FROM page_tasks pt
+           JOIN jobs j ON j.id = pt.job_id
+           WHERE pt.assigned_host_id = ?
+             AND pt.status = 'running'
+             AND TIMESTAMPDIFF(
+               SECOND,
+               pt.started_at,
+               NOW()
+             ) > GREATEST(IFNULL(j.page_timeout_seconds, 60) + IFNULL(j.auto_scroll_seconds, 30) + 30, 120)`,
+          [host.id]
+        );
+
+        for (const task of staleTasks) {
+          if (parseInt(task.retry_count, 10) < parseInt(task.max_retry_count, 10)) {
+            await conn.execute(
+              `UPDATE page_tasks
+               SET status = 'retry_waiting',
+                   retry_count = retry_count + 1,
+                   error_message = 'Recovered stale running task on heartbeat',
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [task.id]
+            );
+          } else {
+            await conn.execute(
+              `UPDATE page_tasks
+               SET status = 'failed',
+                   finished_at = NOW(),
+                   error_message = 'Recovered stale running task on heartbeat',
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [task.id]
+            );
+          }
+        }
+      }
+
       const [counts] = await conn.execute(
         `SELECT
           SUM(CASE WHEN status IN ('pending','retry_waiting') THEN 1 ELSE 0 END) as pending,

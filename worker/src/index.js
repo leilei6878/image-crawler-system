@@ -17,6 +17,19 @@ const api = axios.create({ baseURL: SERVER_URL, timeout: 30000 });
 let hostId = null;
 let running = 0;
 
+function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded timeout ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function heartbeat() {
   try {
     const res = await api.post('/api/hosts/heartbeat', {
@@ -77,7 +90,15 @@ async function executeTask(pool, task) {
     page = await context.newPage();
 
     const adapter = AdapterFactory.create(task.site_type || 'generic');
-    const result = await adapter.crawl(page, task);
+    const hardTimeoutMs = Math.max(
+      ((task.page_timeout_seconds || 60) + (task.auto_scroll_seconds || 0) + 45) * 1000,
+      120000
+    );
+    const result = await withTimeout(
+      adapter.crawl(page, task),
+      hardTimeoutMs,
+      `Task #${task.id}`
+    );
 
     let images = result.images || [];
     const totalBeforeFilter = images.length;

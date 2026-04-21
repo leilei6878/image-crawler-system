@@ -117,8 +117,20 @@ router.post('/:id/expand', async (req, res) => {
       [image.job_id, assignedHostId, image.page_task_id, dispatchMode, image.id, image.detail_page_url]
     );
 
+    if (image.job_status === 'deleted' || image.job_status === 'cancelled') {
+      await conn.rollback();
+      return res.status(400).json({ error: '当前任务已不可继续扩采' });
+    }
+
+    if (!['queued', 'running'].includes(image.job_status)) {
+      await conn.execute(
+        `UPDATE jobs SET status = 'queued', finished_at = NULL, updated_at = NOW() WHERE id = ?`,
+        [image.job_id]
+      );
+    }
+
     await conn.execute(
-      `UPDATE images SET expand_status = 'queued', updated_at = NOW() WHERE id = ?`, [id]
+      `UPDATE images SET expand_status = 'queued' WHERE id = ?`, [id]
     );
 
     await conn.execute(
@@ -141,7 +153,7 @@ router.post('/:id/expand', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    await db.execute(`UPDATE images SET status = 'deleted', updated_at = NOW() WHERE id = ?`, [id]);
+    await db.execute(`UPDATE images SET status = 'deleted' WHERE id = ?`, [id]);
     res.json({ message: '图片已删除' });
   } catch (err) {
     res.status(500).json({ error: '删除失败' });
@@ -154,7 +166,7 @@ router.post('/:id/favorite', async (req, res) => {
     const [images] = await db.execute('SELECT is_favorite FROM images WHERE id = ?', [id]);
     if (images.length === 0) return res.status(404).json({ error: '图片不存在' });
     const newVal = !images[0].is_favorite;
-    await db.execute(`UPDATE images SET is_favorite = ?, updated_at = NOW() WHERE id = ?`, [newVal, id]);
+    await db.execute(`UPDATE images SET is_favorite = ? WHERE id = ?`, [newVal, id]);
     res.json({ message: newVal ? '已收藏' : '已取消收藏', is_favorite: newVal });
   } catch (err) {
     res.status(500).json({ error: '操作失败' });

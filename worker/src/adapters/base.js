@@ -35,7 +35,7 @@ class BaseAdapter {
         window.scrollTo(0, nextY);
       });
       await page.mouse.wheel(0, 2200).catch(() => {});
-      await page.waitForTimeout(intervalMs);
+      await page.waitForTimeout(400);
 
       const newHeight = await page.evaluate(() => document.body.scrollHeight);
       if (newHeight === lastHeight) {

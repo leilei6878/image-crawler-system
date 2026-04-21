@@ -1,0 +1,9 @@
+$ServerUrl = "http://192.168.0.8:3000"
+$HostKey = "worker-001"
+$HostName = "Worker-001"
+$MaxConcurrency = 5
+$PullIntervalMs = 5000
+$InstallNodeIfMissing = $true
+$SkipBrowserInstall = $false
+$StartWorkerAfterInstall = $true
+$Branch = "codex/worker-installer"

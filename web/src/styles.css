@@ -324,3 +324,25 @@ tr:last-child td { border-bottom: none; }
 /* filter card */
 .filter-section { background: #f8faff; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
 .filter-section h4 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); }
+
+.filter-toolbar {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: #fbfdff;
+}
+
+.filter-toolbar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.filter-toolbar-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}

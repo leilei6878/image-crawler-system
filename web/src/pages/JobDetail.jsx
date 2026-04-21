@@ -15,18 +15,42 @@ export default function JobDetail({ showToast }) {
   const [expandHostId, setExpandHostId] = useState('');
   const [hosts, setHosts] = useState([]);
   const [expanding, setExpanding] = useState(false);
+  const defaultImageQuery = {
+    sort_by: 'created_at',
+    sort_order: 'desc',
+    min_like: '',
+    min_favorite: '',
+    min_comment: '',
+    min_share: '',
+    expand_status: '',
+  };
+  const [imageQuery, setImageQuery] = useState(defaultImageQuery);
+  const [imageQueryDraft, setImageQueryDraft] = useState(defaultImageQuery);
 
   useEffect(() => {
     loadData();
     hostApi.list().then(r => setHosts(r.data.data)).catch(() => {});
     const timer = setInterval(loadData, 8000);
     return () => clearInterval(timer);
-  }, [id, imgPage]);
+  }, [id, imgPage, imageQuery]);
 
   async function loadData() {
     try {
-      const res = await jobApi.detail(id, { img_page: imgPage, img_limit: 50 });
+      const res = await jobApi.detail(id, {
+        img_page: imgPage,
+        img_limit: 50,
+        img_sort_by: imageQuery.sort_by,
+        img_sort_order: imageQuery.sort_order,
+        img_min_like: imageQuery.min_like,
+        img_min_favorite: imageQuery.min_favorite,
+        img_min_comment: imageQuery.min_comment,
+        img_min_share: imageQuery.min_share,
+        img_expand_status: imageQuery.expand_status,
+      });
       setData(res.data);
+      if (res.data?.image_query) {
+        setImageQueryDraft(res.data.image_query);
+      }
     } catch (err) {
       if (err.response?.status === 404) {
         showToast('任务不存在', 'error');
@@ -35,6 +59,21 @@ export default function JobDetail({ showToast }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function updateImageQueryDraft(key, value) {
+    setImageQueryDraft(prev => ({ ...prev, [key]: value }));
+  }
+
+  function applyImageQuery() {
+    setImgPage(1);
+    setImageQuery({ ...imageQueryDraft });
+  }
+
+  function resetImageQuery() {
+    setImgPage(1);
+    setImageQuery(defaultImageQuery);
+    setImageQueryDraft(defaultImageQuery);
   }
 
   async function handleJobAction(action) {
@@ -76,11 +115,20 @@ export default function JobDetail({ showToast }) {
   if (loading) return <div className="loading">加载中...</div>;
   if (!data) return <div className="empty">加载失败</div>;
 
-  const { job, filters, images, img_total, page_tasks, task_stats } = data;
+  const { job, filters, images, img_total, image_query, page_tasks, task_stats } = data;
   const formatMetric = (value) => {
     const num = Number(value);
     return Number.isFinite(num) && num > 0 ? num : 0;
   };
+  const sortOptions = [
+    { value: 'created_at', label: '按采集时间' },
+    { value: 'favorite_count', label: '按收藏' },
+    { value: 'like_count', label: '按点赞' },
+    { value: 'comment_count', label: '按评论' },
+    { value: 'share_count', label: '按分享' },
+    { value: 'width', label: '按宽度' },
+    { value: 'height', label: '按高度' },
+  ];
 
   return (
     <div>
@@ -199,6 +247,98 @@ export default function JobDetail({ showToast }) {
 
         {activeTab === 'images' && (
           <div>
+            <div className="filter-toolbar">
+              <div className="filter-toolbar-grid">
+                <div className="form-group">
+                  <label>排序字段</label>
+                  <select
+                    className="form-control"
+                    value={imageQueryDraft.sort_by}
+                    onChange={e => updateImageQueryDraft('sort_by', e.target.value)}
+                  >
+                    {sortOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>排序方向</label>
+                  <select
+                    className="form-control"
+                    value={imageQueryDraft.sort_order}
+                    onChange={e => updateImageQueryDraft('sort_order', e.target.value)}
+                  >
+                    <option value="desc">从高到低 / 最新优先</option>
+                    <option value="asc">从低到高 / 最旧优先</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>最小点赞</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_like}
+                    onChange={e => updateImageQueryDraft('min_like', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>最小收藏</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_favorite}
+                    onChange={e => updateImageQueryDraft('min_favorite', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>最小评论</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_comment}
+                    onChange={e => updateImageQueryDraft('min_comment', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>最小分享</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_share}
+                    onChange={e => updateImageQueryDraft('min_share', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>扩采状态</label>
+                  <select
+                    className="form-control"
+                    value={imageQueryDraft.expand_status}
+                    onChange={e => updateImageQueryDraft('expand_status', e.target.value)}
+                  >
+                    <option value="">全部</option>
+                    <option value="not_expanded">未扩采</option>
+                    <option value="queued">已排队</option>
+                    <option value="running">扩采中</option>
+                    <option value="expanded">已扩采</option>
+                    <option value="failed">扩采失败</option>
+                  </select>
+                </div>
+              </div>
+              <div className="filter-toolbar-actions">
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  当前排序：{sortOptions.find(opt => opt.value === (image_query?.sort_by || imageQuery.sort_by))?.label || '按采集时间'} / {image_query?.sort_order === 'asc' ? '升序' : '降序'}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-outline" onClick={resetImageQuery}>重置</button>
+                  <button className="btn btn-primary" onClick={applyImageQuery}>应用筛选</button>
+                </div>
+              </div>
+            </div>
+
             {images.length === 0 ? (
               <div className="empty">暂无图片</div>
             ) : (

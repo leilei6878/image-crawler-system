@@ -123,7 +123,17 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { img_page = 1, img_limit = 50 } = req.query;
+    const {
+      img_page = 1,
+      img_limit = 50,
+      img_sort_by = 'created_at',
+      img_sort_order = 'desc',
+      img_min_like,
+      img_min_favorite,
+      img_min_comment,
+      img_min_share,
+      img_expand_status,
+    } = req.query;
     const imgOffset = (img_page - 1) * img_limit;
 
     const [jobs] = await db.execute(
@@ -134,11 +144,52 @@ router.get('/:id', async (req, res) => {
 
     const [filters] = await db.execute('SELECT * FROM job_filters WHERE job_id = ?', [id]);
 
+    const sortableFields = new Set([
+      'created_at',
+      'like_count',
+      'favorite_count',
+      'comment_count',
+      'share_count',
+      'width',
+      'height',
+    ]);
+    const sortField = sortableFields.has(img_sort_by) ? img_sort_by : 'created_at';
+    const sortOrder = String(img_sort_order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const sortExpr = sortField === 'created_at' ? 'created_at' : `COALESCE(${sortField}, 0)`;
+
+    const imageWhere = ['job_id = ?'];
+    const imageParams = [id];
+
+    const appendMinFilter = (value, column) => {
+      if (value !== undefined && value !== null && value !== '') {
+        imageWhere.push(`COALESCE(${column}, 0) >= ?`);
+        imageParams.push(parseInt(value, 10) || 0);
+      }
+    };
+
+    appendMinFilter(img_min_like, 'like_count');
+    appendMinFilter(img_min_favorite, 'favorite_count');
+    appendMinFilter(img_min_comment, 'comment_count');
+    appendMinFilter(img_min_share, 'share_count');
+
+    if (img_expand_status) {
+      imageWhere.push('expand_status = ?');
+      imageParams.push(img_expand_status);
+    }
+
+    const imageWhereSql = imageWhere.join(' AND ');
+
     const [images] = await db.execute(
-      `SELECT * FROM images WHERE job_id = ? ORDER BY created_at DESC LIMIT ${parseInt(img_limit)} OFFSET ${parseInt(imgOffset)}`,
-      [id]
+      `SELECT * FROM images
+       WHERE ${imageWhereSql}
+       ORDER BY ${sortExpr} ${sortOrder}, id DESC
+       LIMIT ${parseInt(img_limit)} OFFSET ${parseInt(imgOffset)}`,
+      imageParams
     );
-    const [imgCount] = await db.execute('SELECT COUNT(*) as total FROM images WHERE job_id = ?', [id]);
+    const [imgCount] = await db.execute(
+      `SELECT COUNT(*) as total FROM images WHERE ${imageWhereSql}`,
+      imageParams
+    );
 
     const [pageTasks] = await db.execute(
       `SELECT pt.*, h.name as host_name FROM page_tasks pt
@@ -161,6 +212,15 @@ router.get('/:id', async (req, res) => {
       filters: filters[0] || null,
       images,
       img_total: parseInt(imgCount[0].total),
+      image_query: {
+        sort_by: sortField,
+        sort_order: sortOrder.toLowerCase(),
+        min_like: img_min_like ?? '',
+        min_favorite: img_min_favorite ?? '',
+        min_comment: img_min_comment ?? '',
+        min_share: img_min_share ?? '',
+        expand_status: img_expand_status ?? '',
+      },
       page_tasks: pageTasks,
       task_stats: taskStats[0]
     });

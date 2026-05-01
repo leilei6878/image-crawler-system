@@ -62,7 +62,9 @@ Get-Content .\logs\worker-install.log -Wait
 Get-Content .\logs\worker-install-status.json
 ```
 
-状态文件会记录当前步骤、状态、主控端地址、Worker 目录和日志位置。
+状态文件会记录当前步骤、状态、主控端地址、Worker 目录和日志位置。`status=ok` 表示当前步骤成功，`status=running` 表示仍在执行，`status=failed` 表示安装已经失败。
+
+如果 `logs/worker-install-status.json` 中显示 `status=failed`，不要继续启动 Worker。请先打开 `logs/worker-install.log` 查看失败步骤和错误信息，优先修复依赖安装、网络访问、Node.js/npm、Playwright Chromium 下载或主控端连通性问题，然后重新运行安装器。
 
 ## 常用参数
 
@@ -100,6 +102,16 @@ Node.js 缺失时尝试用 `winget` 安装：
 .\scripts\install_worker.ps1 -InstallNodeIfMissing
 ```
 
+## 安装器失败验证
+
+维护安装器时，可以运行下面的检查脚本验证 native command 非 0 退出码不会被误报为安装成功：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_worker_installer.ps1
+```
+
+该脚本会临时注入一个返回非 0 退出码的 `npm` shim，并确认安装器退出码非 0，同时 `logs/worker-install-status.json` 写入 `status=failed`。
+
 ## 手动启动 Worker
 
 安装完成后可以手动启动：
@@ -127,7 +139,13 @@ npm start
 
 以下文件只用于本地部署，不应提交到仓库：
 
+- `.env` 或 `*.env`
 - `worker/.env`
 - `logs/`
+- `node_modules/`
 - `worker/node_modules/`
 - `worker/screenshots/`
+- `data/`
+- `downloads/`
+- browser profile/cache 目录
+- Playwright 缓存和临时目录

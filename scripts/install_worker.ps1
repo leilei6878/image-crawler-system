@@ -73,6 +73,57 @@ function Invoke-Step {
     }
 }
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory,
+        [switch]$PassThru
+    )
+
+    $displayCommand = $FilePath
+    if ($ArgumentList.Count -gt 0) {
+        $displayCommand = "$FilePath $($ArgumentList -join ' ')"
+    }
+
+    Write-InstallLog -Level "info" -Message "Running: $displayCommand"
+
+    $previousLocation = Get-Location
+    if ($WorkingDirectory) {
+        Push-Location $WorkingDirectory
+    }
+
+    try {
+        $global:LASTEXITCODE = 0
+        if ($PassThru) {
+            $output = & $FilePath @ArgumentList
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) {
+                $exitCode = 0
+            }
+            if ($exitCode -ne 0) {
+                throw "Native command failed with exit code ${exitCode}: $displayCommand"
+            }
+            return $output
+        }
+
+        & $FilePath @ArgumentList
+        $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode) {
+            $exitCode = 0
+        }
+        if ($exitCode -ne 0) {
+            throw "Native command failed with exit code ${exitCode}: $displayCommand"
+        }
+    }
+    finally {
+        if ($WorkingDirectory) {
+            Set-Location $previousLocation
+        }
+    }
+}
+
 function Test-CommandExists {
     param([string]$Name)
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
@@ -84,7 +135,12 @@ function Install-NodeWithWinget {
     }
 
     Write-InstallLog -Level "info" -Message "Installing Node.js LTS with winget."
-    winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+    Invoke-NativeCommand -FilePath "winget" -ArgumentList @(
+        "install",
+        "OpenJS.NodeJS.LTS",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+    )
 
     $defaultNodePath = "C:\Program Files\nodejs"
     if (Test-Path -LiteralPath $defaultNodePath) {
@@ -118,19 +174,13 @@ Invoke-Step -Name "check-node" -Action {
         throw "npm was not found. Reinstall Node.js 20+ and rerun this script."
     }
 
-    $nodeVersion = (& node --version)
-    $npmVersion = (& npm --version)
+    $nodeVersion = (Invoke-NativeCommand -FilePath "node" -ArgumentList @("--version") -PassThru) -join "`n"
+    $npmVersion = (Invoke-NativeCommand -FilePath "npm" -ArgumentList @("--version") -PassThru) -join "`n"
     Write-InstallLog -Level "info" -Message "node=$nodeVersion npm=$npmVersion"
 }
 
 Invoke-Step -Name "install-worker-dependencies" -Action {
-    Push-Location $workerDir
-    try {
-        npm install
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "npm" -ArgumentList @("install") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "install-browser" -Action {
@@ -139,13 +189,7 @@ Invoke-Step -Name "install-browser" -Action {
         return
     }
 
-    Push-Location $workerDir
-    try {
-        npx playwright install chromium
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "npx" -ArgumentList @("playwright", "install", "chromium") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "write-env" -Action {
@@ -166,14 +210,8 @@ SCREENSHOT_DIR=./screenshots
 }
 
 Invoke-Step -Name "validate-worker-code" -Action {
-    Push-Location $repoRoot
-    try {
-        node --check worker\src\index.js
-        node --check worker\src\browser\pool.js
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "node" -ArgumentList @("--check", "worker\src\index.js") -WorkingDirectory $repoRoot
+    Invoke-NativeCommand -FilePath "node" -ArgumentList @("--check", "worker\src\browser\pool.js") -WorkingDirectory $repoRoot
 }
 
 Invoke-Step -Name "check-master-api" -Action {
@@ -192,6 +230,7 @@ Invoke-Step -Name "check-master-api" -Action {
 
 if ($StartWorker) {
     Invoke-Step -Name "start-worker" -Action {
+        Invoke-NativeCommand -FilePath "npm" -ArgumentList @("--version") -WorkingDirectory $workerDir | Out-Null
         Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm start" -WorkingDirectory $workerDir
     }
 }

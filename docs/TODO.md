@@ -5,6 +5,7 @@
 - [x] Add repository foundation documentation.
 - [x] Add sample environment configuration.
 - [x] Add initial CI workflow.
+- [x] Harden Worker installer native command failure handling.
 
 ## Minimal Python Project
 

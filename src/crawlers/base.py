@@ -16,7 +16,7 @@ class CrawlRequest:
 class CrawlResult:
     url: str
     success: bool
-    images: list[str] = field(default_factory=list)
+    images: list[Any] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 

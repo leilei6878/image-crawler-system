@@ -6,20 +6,48 @@ uv.lock
 
 # Node.js
 node_modules/
+worker/node_modules/
 npm-debug.log*
 dist/
 
 # Environment
 .env
+*.env
+worker/.env
 
 # Logs
 *.log
 logs/
 
-# Downloads / temp
+# Downloads / local data
+data/
 downloads/
 screenshots/
 .local-mysql/
+worker/screenshots/
+
+# Browser profiles / caches
+browser-profile/
+browser-profiles/
+browser_cache/
+browser-cache/
+cache/
+.cache/
+worker/.cache/
+worker/browser-profile/
+worker/browser-profiles/
+worker/browser_cache/
+worker/browser-cache/
+
+# Playwright cache / temp
+ms-playwright/
+.playwright/
+playwright-report/
+test-results/
+worker/ms-playwright/
+worker/.playwright/
+worker/playwright-report/
+worker/test-results/
 
 # Replit internal
 .pythonlibs/

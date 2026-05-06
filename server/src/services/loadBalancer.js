@@ -1,5 +1,12 @@
 const db = require('../db');
 
+async function getHeartbeatTimeoutSeconds(dbConn) {
+  const [settings] = await dbConn.execute(
+    `SELECT setting_value FROM system_settings WHERE setting_key = 'heartbeat_timeout_seconds'`
+  );
+  return settings.length > 0 ? parseInt(settings[0].setting_value, 10) : 90;
+}
+
 class LoadBalancer {
   async findBestHost(conn, siteType, requiredTags = []) {
     const dbConn = conn || db;
@@ -8,6 +15,7 @@ class LoadBalancer {
       `SELECT setting_value FROM system_settings WHERE setting_key = 'global_max_pending_threshold'`
     );
     const maxPendingThreshold = settings.length > 0 ? parseInt(settings[0].setting_value) : 100;
+    const heartbeatTimeoutSeconds = await getHeartbeatTimeoutSeconds(dbConn);
 
     const [candidates] = await dbConn.execute(
       `SELECT h.*,
@@ -15,6 +23,8 @@ class LoadBalancer {
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status = 'running') as real_running
        FROM hosts h
        WHERE h.status = 'online'
+         AND h.last_heartbeat_at IS NOT NULL
+         AND h.last_heartbeat_at >= NOW() - INTERVAL '${heartbeatTimeoutSeconds} seconds'
          AND h.accept_global_expand = true`
     );
 
@@ -51,13 +61,21 @@ class LoadBalancer {
   }
 
   async getHostLoads() {
+    const heartbeatTimeoutSeconds = await getHeartbeatTimeoutSeconds(db);
     const [hosts] = await db.execute(
-      `SELECT h.id, h.name, h.status, h.max_concurrency, h.accept_global_expand,
+      `SELECT h.id, h.name,
+        CASE
+          WHEN h.status = 'disabled' THEN 'disabled'
+          WHEN h.last_heartbeat_at IS NULL THEN 'offline'
+          WHEN h.last_heartbeat_at < NOW() - INTERVAL '${heartbeatTimeoutSeconds} seconds' THEN 'offline'
+          ELSE h.status
+        END as status,
+        h.max_concurrency, h.accept_global_expand,
         h.host_tags, h.supported_sites, h.last_heartbeat_at,
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status IN ('pending','retry_waiting')) as pending_count,
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status = 'running') as running_count
        FROM hosts h
-       WHERE h.status != 'disabled'
+       WHERE h.status != 'deleted'
        ORDER BY h.name`
     );
 

@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
-import { jobApi, imageApi, hostApi } from '../services/api';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
+import { hostApi, imageApi, jobApi } from '../services/api';
 
 export default function JobDetail({ showToast }) {
   const { id } = useParams();
@@ -15,18 +15,45 @@ export default function JobDetail({ showToast }) {
   const [expandHostId, setExpandHostId] = useState('');
   const [hosts, setHosts] = useState([]);
   const [expanding, setExpanding] = useState(false);
+  const [downloading, setDownloading] = useState('');
+  const [previewImage, setPreviewImage] = useState(null);
+  const [deletingImageId, setDeletingImageId] = useState(null);
+  const defaultImageQuery = {
+    sort_by: 'created_at',
+    sort_order: 'desc',
+    min_like: '',
+    min_favorite: '',
+    min_comment: '',
+    min_share: '',
+    expand_status: '',
+  };
+  const [imageQuery, setImageQuery] = useState(defaultImageQuery);
+  const [imageQueryDraft, setImageQueryDraft] = useState(defaultImageQuery);
 
   useEffect(() => {
     loadData();
     hostApi.list().then(r => setHosts(r.data.data)).catch(() => {});
     const timer = setInterval(loadData, 8000);
     return () => clearInterval(timer);
-  }, [id, imgPage]);
+  }, [id, imgPage, imageQuery]);
 
   async function loadData() {
     try {
-      const res = await jobApi.detail(id, { img_page: imgPage, img_limit: 50 });
+      const res = await jobApi.detail(id, {
+        img_page: imgPage,
+        img_limit: 50,
+        img_sort_by: imageQuery.sort_by,
+        img_sort_order: imageQuery.sort_order,
+        img_min_like: imageQuery.min_like,
+        img_min_favorite: imageQuery.min_favorite,
+        img_min_comment: imageQuery.min_comment,
+        img_min_share: imageQuery.min_share,
+        img_expand_status: imageQuery.expand_status,
+      });
       setData(res.data);
+      if (res.data?.image_query) {
+        setImageQueryDraft(res.data.image_query);
+      }
     } catch (err) {
       if (err.response?.status === 404) {
         showToast('任务不存在', 'error');
@@ -34,6 +61,54 @@ export default function JobDetail({ showToast }) {
       }
     } finally {
       setLoading(false);
+    }
+  }
+
+  function updateImageQueryDraft(key, value) {
+    setImageQueryDraft(prev => ({ ...prev, [key]: value }));
+  }
+
+  function applyImageQuery() {
+    setImgPage(1);
+    setImageQuery({ ...imageQueryDraft });
+  }
+
+  function resetImageQuery() {
+    setImgPage(1);
+    setImageQuery(defaultImageQuery);
+    setImageQueryDraft(defaultImageQuery);
+  }
+
+  async function handleDownload(scope) {
+    setDownloading(scope);
+    try {
+      const res = await jobApi.downloadImages(id, {
+        scope,
+        img_sort_by: imageQuery.sort_by,
+        img_sort_order: imageQuery.sort_order,
+        img_min_like: imageQuery.min_like,
+        img_min_favorite: imageQuery.min_favorite,
+        img_min_comment: imageQuery.min_comment,
+        img_min_share: imageQuery.min_share,
+        img_expand_status: imageQuery.expand_status,
+      });
+
+      const contentDisposition = res.headers['content-disposition'] || '';
+      const fileNameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      const fileName = fileNameMatch?.[1] || `job_${id}_${scope}_image_urls.txt`;
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'text/plain;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      showToast(scope === 'all' ? '已导出全部图片 URL' : '已导出筛选结果 URL', 'success');
+    } catch (err) {
+      showToast(err.response?.data?.error || '批量导出 URL 失败', 'error');
+    } finally {
+      setDownloading('');
     }
   }
 
@@ -61,7 +136,7 @@ export default function JobDetail({ showToast }) {
     try {
       await imageApi.expand(expandModal.id, {
         mode: expandMode,
-        target_host_id: expandMode === 'manual' ? parseInt(expandHostId) : undefined
+        target_host_id: expandMode === 'manual' ? parseInt(expandHostId, 10) : undefined,
       });
       showToast('扩采任务已创建', 'success');
       setExpandModal(null);
@@ -73,10 +148,42 @@ export default function JobDetail({ showToast }) {
     }
   }
 
+  async function handleDeleteImage(image) {
+    if (!image?.id) return;
+    if (!confirm('确定删除这张图片？删除后会从当前任务结果中移除。')) return;
+
+    setDeletingImageId(image.id);
+    try {
+      await imageApi.delete(image.id);
+      if (previewImage?.id === image.id) {
+        setPreviewImage(null);
+      }
+      showToast('图片已删除', 'success');
+      loadData();
+    } catch (err) {
+      showToast(err.response?.data?.error || '删除图片失败', 'error');
+    } finally {
+      setDeletingImageId(null);
+    }
+  }
+
   if (loading) return <div className="loading">加载中...</div>;
   if (!data) return <div className="empty">加载失败</div>;
 
-  const { job, filters, images, img_total, page_tasks, task_stats } = data;
+  const { job, filters, images, img_total, image_query, page_tasks, task_stats } = data;
+  const formatMetric = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? num : 0;
+  };
+  const sortOptions = [
+    { value: 'created_at', label: '按采集时间' },
+    { value: 'favorite_count', label: '按收藏' },
+    { value: 'like_count', label: '按点赞' },
+    { value: 'comment_count', label: '按评论' },
+    { value: 'share_count', label: '按分享' },
+    { value: 'width', label: '按宽度' },
+    { value: 'height', label: '按高度' },
+  ];
 
   return (
     <div>
@@ -101,7 +208,6 @@ export default function JobDetail({ showToast }) {
         </div>
       </div>
 
-      {/* 任务概览 */}
       <div className="card">
         <div className="card-header"><h3>任务概览</h3></div>
         <div className="info-grid">
@@ -144,7 +250,6 @@ export default function JobDetail({ showToast }) {
         </div>
       </div>
 
-      {/* 统计 */}
       <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
         <div className="stat-card success">
           <div className="stat-value">{img_total || 0}</div>
@@ -168,36 +273,141 @@ export default function JobDetail({ showToast }) {
         </div>
       </div>
 
-      {/* 筛选规则 */}
       {filters && (
         <div className="card">
           <div className="card-header"><h3>筛选规则</h3></div>
           <div className="info-grid">
             <div className="info-item"><label>逻辑</label><div className="value">{filters.logic_mode?.toUpperCase()}</div></div>
-            {filters.min_like && <div className="info-item"><label>最小点赞</label><div className="value">{filters.min_like}</div></div>}
-            {filters.min_width && <div className="info-item"><label>最小宽度</label><div className="value">{filters.min_width}px</div></div>}
-            {filters.min_height && <div className="info-item"><label>最小高度</label><div className="value">{filters.min_height}px</div></div>}
+            {filters.min_like != null && <div className="info-item"><label>最小点赞</label><div className="value">{filters.min_like}</div></div>}
+            {filters.min_favorite != null && <div className="info-item"><label>最小收藏</label><div className="value">{filters.min_favorite}</div></div>}
+            {filters.min_comment != null && <div className="info-item"><label>最小评论</label><div className="value">{filters.min_comment}</div></div>}
+            {filters.min_share != null && <div className="info-item"><label>最小分享</label><div className="value">{filters.min_share}</div></div>}
+            {filters.min_width != null && <div className="info-item"><label>最小宽度</label><div className="value">{filters.min_width}px</div></div>}
+            {filters.min_height != null && <div className="info-item"><label>最小高度</label><div className="value">{filters.min_height}px</div></div>}
             <div className="info-item"><label>排除视频</label><div className="value">{filters.exclude_video ? '是' : '否'}</div></div>
             <div className="info-item"><label>排除拼图</label><div className="value">{filters.exclude_collage ? '是' : '否'}</div></div>
           </div>
         </div>
       )}
 
-      {/* 选项卡 */}
       <div className="card">
         <div className="tabs">
-          <div className={`tab ${activeTab === 'images' ? 'active' : ''}`}
-            onClick={() => setActiveTab('images')}>
+          <div className={`tab ${activeTab === 'images' ? 'active' : ''}`} onClick={() => setActiveTab('images')}>
             图片 ({img_total})
           </div>
-          <div className={`tab ${activeTab === 'tasks' ? 'active' : ''}`}
-            onClick={() => setActiveTab('tasks')}>
+          <div className={`tab ${activeTab === 'tasks' ? 'active' : ''}`} onClick={() => setActiveTab('tasks')}>
             页面任务 ({page_tasks?.length || 0})
           </div>
         </div>
 
         {activeTab === 'images' && (
           <div>
+            <div className="filter-toolbar">
+              <div className="filter-toolbar-grid">
+                <div className="form-group">
+                  <label>排序字段</label>
+                  <select
+                    className="form-control"
+                    value={imageQueryDraft.sort_by}
+                    onChange={e => updateImageQueryDraft('sort_by', e.target.value)}
+                  >
+                    {sortOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>排序方向</label>
+                  <select
+                    className="form-control"
+                    value={imageQueryDraft.sort_order}
+                    onChange={e => updateImageQueryDraft('sort_order', e.target.value)}
+                  >
+                    <option value="desc">从高到低 / 最新优先</option>
+                    <option value="asc">从低到高 / 最旧优先</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>最小点赞</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_like}
+                    onChange={e => updateImageQueryDraft('min_like', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>最小收藏</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_favorite}
+                    onChange={e => updateImageQueryDraft('min_favorite', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>最小评论</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_comment}
+                    onChange={e => updateImageQueryDraft('min_comment', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>最小分享</label>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min="0"
+                    value={imageQueryDraft.min_share}
+                    onChange={e => updateImageQueryDraft('min_share', e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>扩采状态</label>
+                  <select
+                    className="form-control"
+                    value={imageQueryDraft.expand_status}
+                    onChange={e => updateImageQueryDraft('expand_status', e.target.value)}
+                  >
+                    <option value="">全部</option>
+                    <option value="not_expanded">未扩采</option>
+                    <option value="queued">已排队</option>
+                    <option value="running">扩采中</option>
+                    <option value="expanded">已扩采</option>
+                    <option value="failed">扩采失败</option>
+                  </select>
+                </div>
+              </div>
+              <div className="filter-toolbar-actions">
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  当前排序：{sortOptions.find(opt => opt.value === (image_query?.sort_by || imageQuery.sort_by))?.label || '按采集时间'} / {image_query?.sort_order === 'asc' ? '升序' : '降序'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDownload('all')}
+                    disabled={downloading !== ''}
+                  >
+                    {downloading === 'all' ? '导出中...' : '导出全部URL'}
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDownload('filtered')}
+                    disabled={downloading !== ''}
+                  >
+                    {downloading === 'filtered' ? '导出中...' : '导出筛选URL'}
+                  </button>
+                  <button className="btn btn-outline" onClick={resetImageQuery}>重置</button>
+                  <button className="btn btn-primary" onClick={applyImageQuery}>应用筛选</button>
+                </div>
+              </div>
+            </div>
+
             {images.length === 0 ? (
               <div className="empty">暂无图片</div>
             ) : (
@@ -208,13 +418,20 @@ export default function JobDetail({ showToast }) {
                       <img
                         src={img.image_url}
                         alt={img.author_name || '图片'}
+                        className="image-card-preview"
+                        onClick={() => setPreviewImage(img)}
                         onError={e => { e.target.style.display = 'none'; }}
                       />
                       <div className="image-card-info">
                         {img.author_name && <div style={{ fontWeight: 500 }}>{img.author_name}</div>}
                         <div>
-                          {img.width && img.height && `${img.width}×${img.height}`}
-                          {img.like_count != null && ` ♥${img.like_count}`}
+                          {img.width && img.height && `${img.width}x${img.height}`}
+                        </div>
+                        <div style={{ marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, color: 'var(--text-muted)' }}>
+                          <span>点赞: {formatMetric(img.like_count)}</span>
+                          <span>收藏: {formatMetric(img.favorite_count)}</span>
+                          <span>评论: {formatMetric(img.comment_count)}</span>
+                          <span>分享: {formatMetric(img.share_count)}</span>
                         </div>
                         <div style={{ marginTop: 2 }}>
                           <span className={`status-tag status-${img.expand_status}`} style={{ fontSize: 11 }}>
@@ -224,15 +441,33 @@ export default function JobDetail({ showToast }) {
                       </div>
                       <div className="image-card-actions">
                         {img.detail_page_url && img.expand_status === 'not_expanded' && (
-                          <button className="btn btn-xs btn-primary"
-                            onClick={() => { setExpandModal(img); setExpandMode('local'); }}>
+                          <button
+                            className="btn btn-xs btn-primary"
+                            onClick={() => {
+                              setExpandModal(img);
+                              setExpandMode('local');
+                            }}
+                          >
                             扩采
                           </button>
                         )}
                         {img.detail_page_url && (
-                          <a href={img.detail_page_url} target="_blank" rel="noreferrer"
-                            className="btn btn-xs btn-outline">详情页</a>
+                          <a
+                            href={img.detail_page_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="btn btn-xs btn-outline"
+                          >
+                            详情页
+                          </a>
                         )}
+                        <button
+                          className="btn btn-xs btn-danger"
+                          onClick={() => handleDeleteImage(img)}
+                          disabled={deletingImageId === img.id}
+                        >
+                          {deletingImageId === img.id ? '删除中..' : '删除'}
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -244,8 +479,7 @@ export default function JobDetail({ showToast }) {
                     <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                       {imgPage} / {Math.ceil(img_total / 50)}
                     </span>
-                    <button disabled={imgPage >= Math.ceil(img_total / 50)}
-                      onClick={() => setImgPage(p => p + 1)}>下一页</button>
+                    <button disabled={imgPage >= Math.ceil(img_total / 50)} onClick={() => setImgPage(p => p + 1)}>下一页</button>
                   </div>
                 )}
               </>
@@ -261,8 +495,14 @@ export default function JobDetail({ showToast }) {
               <table>
                 <thead>
                   <tr>
-                    <th>ID</th><th>类型</th><th>状态</th><th>优先级</th>
-                    <th>重试次数</th><th>URL</th><th>创建时间</th><th>完成时间</th>
+                    <th>ID</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>优先级</th>
+                    <th>重试次数</th>
+                    <th>URL</th>
+                    <th>创建时间</th>
+                    <th>完成时间</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -274,8 +514,7 @@ export default function JobDetail({ showToast }) {
                       <td>{pt.priority}</td>
                       <td>{pt.retry_count}</td>
                       <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <a href={pt.target_url} target="_blank" rel="noreferrer"
-                          style={{ fontSize: 12, color: 'var(--primary)' }}>
+                        <a href={pt.target_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--primary)' }}>
                           {pt.target_url}
                         </a>
                       </td>
@@ -294,7 +533,6 @@ export default function JobDetail({ showToast }) {
         )}
       </div>
 
-      {/* 扩采模态框 */}
       {expandModal && (
         <div className="modal-overlay" onClick={() => setExpandModal(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -309,9 +547,11 @@ export default function JobDetail({ showToast }) {
                 { mode: 'auto', title: '自动调度', desc: '负载均衡器自动选择最优主机' },
                 { mode: 'manual', title: '手动指定', desc: '手动选择目标主机执行' },
               ].map(opt => (
-                <div key={opt.mode}
+                <div
+                  key={opt.mode}
                   className={`expand-option ${expandMode === opt.mode ? 'selected' : ''}`}
-                  onClick={() => setExpandMode(opt.mode)}>
+                  onClick={() => setExpandMode(opt.mode)}
+                >
                   <h4>{opt.title}</h4>
                   <p>{opt.desc}</p>
                 </div>
@@ -321,8 +561,7 @@ export default function JobDetail({ showToast }) {
             {expandMode === 'manual' && (
               <div className="form-group">
                 <label>选择主机</label>
-                <select className="form-control" value={expandHostId}
-                  onChange={e => setExpandHostId(e.target.value)}>
+                <select className="form-control" value={expandHostId} onChange={e => setExpandHostId(e.target.value)}>
                   <option value="">-- 选择主机 --</option>
                   {hosts.filter(h => h.status === 'online').map(h => (
                     <option key={h.id} value={h.id}>
@@ -338,6 +577,37 @@ export default function JobDetail({ showToast }) {
               <button className="btn btn-primary" onClick={handleExpand} disabled={expanding}>
                 {expanding ? '提交中...' : '确认扩采'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewImage && (
+        <div className="modal-overlay" onClick={() => setPreviewImage(null)}>
+          <div className="modal image-preview-modal" onClick={e => e.stopPropagation()}>
+            <div className="image-preview-header">
+              <div>
+                {previewImage.author_name && (
+                  <div className="image-preview-title">{previewImage.author_name}</div>
+                )}
+                <div className="image-preview-meta">
+                  <span>点赞: {formatMetric(previewImage.like_count)}</span>
+                  <span>收藏: {formatMetric(previewImage.favorite_count)}</span>
+                  <span>评论: {formatMetric(previewImage.comment_count)}</span>
+                  <span>分享: {formatMetric(previewImage.share_count)}</span>
+                  {previewImage.width && previewImage.height && (
+                    <span>{previewImage.width}x{previewImage.height}</span>
+                  )}
+                </div>
+              </div>
+              <button className="btn btn-outline btn-sm" onClick={() => setPreviewImage(null)}>关闭</button>
+            </div>
+            <div className="image-preview-body">
+              <img
+                src={previewImage.image_url}
+                alt={previewImage.author_name || '图片预览'}
+                className="image-preview-image"
+              />
             </div>
           </div>
         </div>

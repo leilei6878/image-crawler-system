@@ -22,7 +22,10 @@ class Scheduler {
       await db.execute(
         `UPDATE hosts SET status = 'offline'
          WHERE status = 'online'
-           AND last_heartbeat_at < NOW() - INTERVAL '${timeoutSeconds} seconds'`
+           AND (
+             last_heartbeat_at IS NULL
+             OR last_heartbeat_at < NOW() - INTERVAL '${timeoutSeconds} seconds'
+           )`
       );
     } catch (err) {
       console.error('[Scheduler] 检查心跳超时失败:', err.message);

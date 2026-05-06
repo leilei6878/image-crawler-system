@@ -1,23 +1,69 @@
 # image-crawler-system
 
+## Social Brand Account Crawling V1
+
+This repository now includes the first architecture slice for social brand
+account image crawling. The current scope is model and orchestration first:
+
+- Model a public social account or public page URL as `SocialAccountSource`.
+- Create `CrawlJob` records for `historical`, `incremental`, or `temporary`
+  crawl modes.
+- Run manual one-shot jobs, interval jobs, and temporary jobs through an
+  in-memory scheduler interface.
+- Route sources through a platform adapter registry.
+- Use `mock_social_adapter` and `generic_public_page_adapter` as the first
+  testable adapters.
+
+This is not a login crawler and does not bypass platform controls. It does not
+store cookies, credentials, tokens, or private API details. Real platform
+adapters for Xiaohongshu, Weibo, Instagram, Pinterest, TikTok, and similar
+platforms must be developed separately with explicit public-content and
+rate-limit policies.
+
+Example local CLI flow:
+
+```sh
+python -m src.main create-social-source \
+  --platform website \
+  --account-name "Example Brand" \
+  --profile-url "https://example.com/gallery" \
+  --max-items 20
+
+python -m src.main create-job --source-id <source_id>
+python -m src.main run-job --job-id <job_id>
+python -m src.main job-status --job-id <job_id>
+```
+
+The CLI persists local development state in `data/social_crawler_state.json` by
+default. The `data/` directory is intentionally ignored by Git. See
+`docs/SOCIAL_CRAWLING_DESIGN.md` for the adapter, scheduler, and safety
+boundary design.
+
+The master web UI also includes a first social crawling management page at
+`/social`. It can create public account/page sources, create jobs, run mock
+jobs, and inspect run image assets against the `/api/social` endpoints.
+
 `image-crawler-system` 是一个图片爬虫系统的最小 Python 项目骨架。当前目标不是一次性实现完整分布式采集平台，而是先建立清晰、可运行、可测试、可扩展的基础结构。
 
 ## 当前状态
 
-项目现在已经从纯文档阶段推进到最小可运行 Python 项目阶段：
+项目现在已经从最小 Python 骨架推进到 generic HTML 图片提取基础层：
 
 - 使用 Python 作为主运行时。
-- 提供最小配置加载能力。
-- 提供爬虫适配器接口骨架和一个示例适配器。
-- 提供 pytest 测试结构。
-- GitHub Actions 会安装依赖并运行测试。
+- 提供环境变量配置加载能力。
+- 提供带 timeout、retry、User-Agent 和并发边界意识的 HTTP fetcher。
+- 提供 URL normalization / validation 与图片元数据模型。
+- 支持从普通 HTML 中提取 `img[src]`、`img[srcset]`、`meta[property="og:image"]`、`link rel=image_src`。
+- 提供 generic HTML adapter，用于输入普通网页 URL 后抓取 HTML 并提取图片资产。
+- 提供 pytest 测试结构，测试不依赖真实外网请求。
 
 尚未实现的能力：
 
-- 真实网页抓取和图片下载。
-- 站点级适配器规则。
+- 具体社媒平台适配器、登录态采集或反爬绕过。
+- 图片二进制下载和资产存储。
 - 持久化存储。
-- 任务队列、调度器或分布式 worker。
+- 任务队列、调度器或分布式 worker 编排。
+- UI/API 管理端。
 - 完整日志、监控和失败重试策略。
 
 ## 项目结构
@@ -33,18 +79,13 @@
 │   └── TODO.md
 ├── requirements.txt
 ├── src/
-│   ├── __init__.py
-│   ├── main.py
 │   ├── config/
-│   │   ├── __init__.py
-│   │   └── settings.py
-│   └── crawlers/
-│       ├── __init__.py
-│       ├── base.py
-│       └── example.py
+│   ├── crawlers/
+│   ├── extractors/
+│   ├── fetching/
+│   ├── models/
+│   └── main.py
 └── tests/
-    ├── test_example_crawler.py
-    └── test_settings.py
 ```
 
 ## 本地安装
@@ -84,8 +125,33 @@ cp .env.example .env
 | `CRAWL_TIMEOUT` | `30` | 单次抓取超时时间，单位秒 |
 | `CRAWL_RETRY_COUNT` | `3` | 抓取失败后的重试次数 |
 | `CRAWL_CONCURRENCY` | `4` | 并发抓取数量上限 |
+| `CRAWL_USER_AGENT` | `image-crawler-system/0.1` | HTTP 请求 User-Agent |
 | `DATA_DIR` | `./data` | 本地数据目录 |
 | `DOWNLOAD_DIR` | `./data/downloads` | 图片下载目录 |
+
+## Generic HTML 图片提取
+
+当前支持的是通用 HTML 图片发现，不绑定具体社媒平台，也不处理登录态 cookie、反爬绕过或私有 API。
+
+`GenericHtmlAdapter` 会：
+
+- 校验和标准化输入 URL。
+- 使用 HTTP fetcher 拉取 HTML。
+- 从 HTML 中提取常见图片入口。
+- 输出标准化 `ImageAsset` 列表，并按 normalized image URL 去重。
+
+示例：
+
+```python
+from src.config import Settings
+from src.crawlers import CrawlRequest, GenericHtmlAdapter
+
+crawler = GenericHtmlAdapter(Settings.from_env())
+result = crawler.crawl(CrawlRequest(url="https://example.com/gallery"))
+
+for image in result.images:
+    print(image.normalized_image_url)
+```
 
 ## 本地运行
 

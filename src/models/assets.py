@@ -29,6 +29,14 @@ class ImageAsset:
     content_type: str | None = None
     discovered_at: datetime = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    platform: str | None = None
+    account_name: str | None = None
+    profile_url: str | None = None
+    crawl_mode: str | None = None
+    schedule_type: str | None = None
+    source_id: str | None = None
+    job_id: str | None = None
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)

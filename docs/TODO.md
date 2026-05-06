@@ -28,11 +28,14 @@
 ## Next Engineering Tasks
 
 - [ ] Add persistence interface for crawl results and image metadata.
-- [ ] Add scheduler/queue for crawl jobs.
-- [ ] Add source adapter registry.
+- [x] Add scheduler/queue interface for crawl jobs.
+- [x] Add source adapter registry.
+- [x] Add social media brand account architecture V1 with mock adapters.
 - [ ] Research social media public profile adapter boundaries.
-- [ ] Define rate limit policy and source policy handling.
+- [x] Define initial rate limit policy and source policy handling.
 - [ ] Design UI/API management surface.
+- [ ] Replace local CLI JSON state with a durable persistence backend.
+- [ ] Add real platform adapter design docs before implementation.
 
 ## Backlog
 

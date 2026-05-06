@@ -1,5 +1,44 @@
 # image-crawler-system
 
+## Social Brand Account Crawling V1
+
+This repository now includes the first architecture slice for social brand
+account image crawling. The current scope is model and orchestration first:
+
+- Model a public social account or public page URL as `SocialAccountSource`.
+- Create `CrawlJob` records for `historical`, `incremental`, or `temporary`
+  crawl modes.
+- Run manual one-shot jobs, interval jobs, and temporary jobs through an
+  in-memory scheduler interface.
+- Route sources through a platform adapter registry.
+- Use `mock_social_adapter` and `generic_public_page_adapter` as the first
+  testable adapters.
+
+This is not a login crawler and does not bypass platform controls. It does not
+store cookies, credentials, tokens, or private API details. Real platform
+adapters for Xiaohongshu, Weibo, Instagram, Pinterest, TikTok, and similar
+platforms must be developed separately with explicit public-content and
+rate-limit policies.
+
+Example local CLI flow:
+
+```sh
+python -m src.main create-social-source \
+  --platform website \
+  --account-name "Example Brand" \
+  --profile-url "https://example.com/gallery" \
+  --max-items 20
+
+python -m src.main create-job --source-id <source_id>
+python -m src.main run-job --job-id <job_id>
+python -m src.main job-status --job-id <job_id>
+```
+
+The CLI persists local development state in `data/social_crawler_state.json` by
+default. The `data/` directory is intentionally ignored by Git. See
+`docs/SOCIAL_CRAWLING_DESIGN.md` for the adapter, scheduler, and safety
+boundary design.
+
 `image-crawler-system` 是一个图片爬虫系统的最小 Python 项目骨架。当前目标不是一次性实现完整分布式采集平台，而是先建立清晰、可运行、可测试、可扩展的基础结构。
 
 ## 当前状态

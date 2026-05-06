@@ -41,4 +41,15 @@ export const statsApi = {
   logs: (params) => api.get('/stats/logs', { params }),
 };
 
+export const socialApi = {
+  meta: () => api.get('/social/meta'),
+  listSources: (params) => api.get('/social/sources', { params }),
+  createSource: (data) => api.post('/social/sources', data),
+  listJobs: (params) => api.get('/social/jobs', { params }),
+  createJob: (data) => api.post('/social/jobs', data),
+  runJob: (id) => api.post(`/social/jobs/${id}/run`),
+  jobStatus: (id) => api.get(`/social/jobs/${id}/status`),
+  listRuns: (params) => api.get('/social/runs', { params }),
+};
+
 export default api;

@@ -39,6 +39,10 @@ default. The `data/` directory is intentionally ignored by Git. See
 `docs/SOCIAL_CRAWLING_DESIGN.md` for the adapter, scheduler, and safety
 boundary design.
 
+The master web UI also includes a first social crawling management page at
+`/social`. It can create public account/page sources, create jobs, run mock
+jobs, and inspect run image assets against the `/api/social` endpoints.
+
 `image-crawler-system` 是一个图片爬虫系统的最小 Python 项目骨架。当前目标不是一次性实现完整分布式采集平台，而是先建立清晰、可运行、可测试、可扩展的基础结构。
 
 ## 当前状态

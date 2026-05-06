@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const socialRoutes = require('./routes/social');
 
 const app = express();
 const port = process.env.PORT || 3003;
@@ -8,6 +9,7 @@ const port = process.env.PORT || 3003;
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
+app.use('/api/social', socialRoutes);
 
 const now = () => new Date().toISOString();
 

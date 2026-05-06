@@ -33,7 +33,8 @@
 - [x] Add social media brand account architecture V1 with mock adapters.
 - [ ] Research social media public profile adapter boundaries.
 - [x] Define initial rate limit policy and source policy handling.
-- [ ] Design UI/API management surface.
+- [x] Add first social crawling UI/API management surface.
+- [ ] Persist social crawling sources, jobs, and runs in the production database.
 - [ ] Replace local CLI JSON state with a durable persistence backend.
 - [ ] Add real platform adapter design docs before implementation.
 

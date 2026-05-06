@@ -9,6 +9,7 @@ const hostRoutes = require('./routes/hosts');
 const imageRoutes = require('./routes/images');
 const taskRoutes = require('./routes/tasks');
 const statsRoutes = require('./routes/stats');
+const socialRoutes = require('./routes/social');
 const scheduler = require('./services/scheduler');
 
 const app = express();
@@ -26,6 +27,7 @@ app.use('/api/hosts', hostRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/social', socialRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

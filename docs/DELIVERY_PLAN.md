@@ -23,6 +23,9 @@ supersedes earlier environment blockers in the historical recovery log.
   tests 5 passed; frontend build passed; installer failure cases 3 passed.
 - Installer remote checkpoint: 3a1e01a600551a631a29f59e4bc79516a4255baa.
 - Public HTTP/Worker extraction checkpoint: 155a133.
+- Browser/Python/database P1 checkpoint: f9b6f54.
+- Draft PR #7: https://github.com/leilei6878/image-crawler-system/pull/7
+- Detailed interruption recovery: docs/recovery/2026-09-22-p1.md.
 - Local Git now works through current-user external execution. A scoped
   installer checkpoint stash is retained as a backup; other changes preserved.
 

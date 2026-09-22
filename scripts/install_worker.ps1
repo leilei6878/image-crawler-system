@@ -8,7 +8,8 @@ param(
     [switch]$InstallNodeIfMissing,
     [switch]$SkipBrowserInstall,
     [switch]$SkipConnectivityCheck,
-    [switch]$StartWorker
+    [switch]$StartWorker,
+    [string]$LogDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +17,11 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $workerDir = Join-Path $repoRoot "worker"
-$logDir = Join-Path $repoRoot "logs"
+$logDir = if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+    Join-Path $repoRoot "logs"
+} else {
+    [System.IO.Path]::GetFullPath($LogDirectory)
+}
 $logFile = Join-Path $logDir "worker-install.log"
 $statusFile = Join-Path $logDir "worker-install-status.json"
 $envFile = Join-Path $workerDir ".env"
@@ -138,6 +143,8 @@ function Install-NodeWithWinget {
     Invoke-NativeCommand -FilePath "winget" -ArgumentList @(
         "install",
         "OpenJS.NodeJS.LTS",
+        "--scope", "user",
+        "--disable-interactivity",
         "--accept-package-agreements",
         "--accept-source-agreements"
     )
@@ -175,12 +182,12 @@ Invoke-Step -Name "check-node" -Action {
     }
 
     $nodeVersion = (Invoke-NativeCommand -FilePath "node" -ArgumentList @("--version") -PassThru) -join "`n"
-    $npmVersion = (Invoke-NativeCommand -FilePath "npm" -ArgumentList @("--version") -PassThru) -join "`n"
+    $npmVersion = (Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("--version") -PassThru) -join "`n"
     Write-InstallLog -Level "info" -Message "node=$nodeVersion npm=$npmVersion"
 }
 
 Invoke-Step -Name "install-worker-dependencies" -Action {
-    Invoke-NativeCommand -FilePath "npm" -ArgumentList @("install") -WorkingDirectory $workerDir
+    Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("install") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "install-browser" -Action {
@@ -189,7 +196,7 @@ Invoke-Step -Name "install-browser" -Action {
         return
     }
 
-    Invoke-NativeCommand -FilePath "npx" -ArgumentList @("playwright", "install", "chromium") -WorkingDirectory $workerDir
+    Invoke-NativeCommand -FilePath "npx.cmd" -ArgumentList @("playwright", "install", "chromium") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "write-env" -Action {
@@ -230,8 +237,8 @@ Invoke-Step -Name "check-master-api" -Action {
 
 if ($StartWorker) {
     Invoke-Step -Name "start-worker" -Action {
-        Invoke-NativeCommand -FilePath "npm" -ArgumentList @("--version") -WorkingDirectory $workerDir | Out-Null
-        Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm start" -WorkingDirectory $workerDir
+        Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("--version") -WorkingDirectory $workerDir | Out-Null
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm start" -WorkingDirectory $workerDir -WindowStyle Hidden
     }
 }
 

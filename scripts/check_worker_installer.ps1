@@ -1,83 +1,76 @@
 param()
 
 $ErrorActionPreference = "Stop"
-
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Split-Path -Parent $scriptDir
-$installer = Join-Path $scriptDir "install_worker.ps1"
-$statusFile = Join-Path $repoRoot "logs\worker-install-status.json"
-$shimDir = Join-Path ([System.IO.Path]::GetTempPath()) ("worker-installer-shims-" + [System.Guid]::NewGuid().ToString("N"))
+$repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+$testRoot = Join-Path $tempParent ("worker-installer-check-" + [Guid]::NewGuid().ToString("N"))
 $originalPath = $env:Path
-
-function Write-Shim {
-    param(
-        [string]$Name,
-        [string]$Content
-    )
-    Set-Content -Path (Join-Path $shimDir $Name) -Value $Content -Encoding ASCII
-}
-
-if (-not (Test-Path -LiteralPath $installer)) {
-    throw "Installer was not found: $installer"
-}
+$originalScenario = $env:WORKER_INSTALL_TEST_FAILURE
+$originalNoPause = $env:WORKER_INSTALL_NO_PAUSE
 
 try {
-    New-Item -ItemType Directory -Path $shimDir | Out-Null
-
-    Write-Shim -Name "node.cmd" -Content @"
+    $scriptDir = New-Item -ItemType Directory -Path (Join-Path $testRoot "scripts") -Force
+    $workerDir = New-Item -ItemType Directory -Path (Join-Path $testRoot "worker") -Force
+    $shimDir = New-Item -ItemType Directory -Path (Join-Path $testRoot "shims") -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot "scripts\install_worker.ps1") -Destination $scriptDir.FullName
+    Copy-Item -LiteralPath (Join-Path $repoRoot "install_worker.bat") -Destination $testRoot
+    Set-Content -LiteralPath (Join-Path $workerDir "package.json") -Value '{}' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $shimDir "node.cmd") -Encoding ASCII -Value @'
 @echo off
 if "%~1"=="--version" (
   echo v20.0.0
   exit /b 0
 )
-echo node shim accepted %*
+if "%~1"=="--check" if "%WORKER_INSTALL_TEST_FAILURE%"=="preflight" exit /b 44
 exit /b 0
-"@
-
-    Write-Shim -Name "npm.cmd" -Content @"
+'@
+    Set-Content -LiteralPath (Join-Path $shimDir "npm.cmd") -Encoding ASCII -Value @'
 @echo off
 if "%~1"=="--version" (
   echo 10.0.0
   exit /b 0
 )
-echo npm shim forced failure 1>&2
-exit /b 42
-"@
-
-    Write-Shim -Name "npx.cmd" -Content @"
-@echo off
-echo npx shim should not be reached
+if "%~1"=="install" if "%WORKER_INSTALL_TEST_FAILURE%"=="dependencies" exit /b 42
 exit /b 0
-"@
-
-    $env:Path = "$shimDir;$originalPath"
-
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -SkipBrowserInstall -SkipConnectivityCheck
-    $installerExitCode = $LASTEXITCODE
-
-    if ($installerExitCode -eq 0) {
-        throw "Installer returned exit code 0 even though the npm shim failed."
+'@
+    Set-Content -LiteralPath (Join-Path $shimDir "npx.cmd") -Encoding ASCII -Value @'
+@echo off
+if "%WORKER_INSTALL_TEST_FAILURE%"=="playwright" exit /b 43
+exit /b 0
+'@
+    $env:Path = "$($shimDir.FullName);$originalPath"
+    $env:WORKER_INSTALL_NO_PAUSE = "1"
+    $cases = @(
+        @{ Name = "dependencies"; Step = "install-worker-dependencies"; NativeExit = 42 },
+        @{ Name = "playwright"; Step = "install-browser"; NativeExit = 43 },
+        @{ Name = "preflight"; Step = "validate-worker-code"; NativeExit = 44 }
+    )
+    foreach ($case in $cases) {
+        $env:WORKER_INSTALL_TEST_FAILURE = $case.Name
+        $caseLogs = Join-Path $testRoot $case.Name
+        # Fresh per-case status paths prevent stale failed results from passing.
+        $statusFile = Join-Path $caseLogs "worker-install-status.json"
+        & (Join-Path $testRoot "install_worker.bat") -SkipConnectivityCheck -LogDirectory $caseLogs
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) { throw "$($case.Name): batch wrapper returned success." }
+        if (-not (Test-Path -LiteralPath $statusFile)) { throw "$($case.Name): no fresh status file." }
+        $status = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json
+        if ($status.status -ne "failed" -or $status.step -ne $case.Step) {
+            throw "$($case.Name): expected failed at $($case.Step), got $($status.status) at $($status.step)."
+        }
+        if ($status.message -notmatch "exit code $($case.NativeExit):") {
+            throw "$($case.Name): failure did not originate from the injected native exit."
+        }
+        Write-Host "PASS $($case.Name): native exit $($case.NativeExit), status=failed, bat exit=$exitCode"
     }
-
-    if (-not (Test-Path -LiteralPath $statusFile)) {
-        throw "Installer did not write status file: $statusFile"
-    }
-
-    $status = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json
-    if ($status.status -ne "failed") {
-        throw "Expected status=failed, got status=$($status.status)."
-    }
-    if ($status.step -ne "install-worker-dependencies") {
-        throw "Expected failure at install-worker-dependencies, got step=$($status.step)."
-    }
-
-    Write-Host "Worker installer failure handling check passed."
-    Write-Host "Installer exit code: $installerExitCode"
-    Write-Host "Status file: $statusFile"
 }
 finally {
     $env:Path = $originalPath
-    if (Test-Path -LiteralPath $shimDir) {
-        Remove-Item -LiteralPath $shimDir -Recurse -Force
+    $env:WORKER_INSTALL_TEST_FAILURE = $originalScenario
+    $env:WORKER_INSTALL_NO_PAUSE = $originalNoPause
+    $resolvedRoot = [IO.Path]::GetFullPath($testRoot)
+    if (-not $resolvedRoot.StartsWith($tempParent + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean a path outside the temporary directory."
     }
+    if (Test-Path -LiteralPath $resolvedRoot) { Remove-Item -LiteralPath $resolvedRoot -Recurse -Force }
 }

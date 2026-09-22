@@ -4,8 +4,8 @@
 
 This is the first architecture slice for social brand account image crawling.
 It lets the system represent a public brand account or public page URL, create
-crawl jobs, route jobs through a platform adapter registry, and run jobs through
-an in-memory scheduler.
+crawl jobs, route jobs through a platform adapter registry, and run the generic
+public-page path through the existing database-backed Worker scheduler.
 
 This version intentionally does not implement real platform crawling for
 Xiaohongshu, Weibo, Instagram, Pinterest, TikTok, or similar platforms. It uses
@@ -24,10 +24,10 @@ testable before platform-specific research starts.
 ## Schedule Types
 
 - `manual`: one-shot job created and run explicitly.
-- `interval`: recurring job interface with an `interval_seconds` value. V1 keeps
-  execution in memory so a future scheduler can replace the implementation.
-- `cron`: recurring job interface with a `cron_expression`. V1 validates that a
-  cron expression exists but does not run a background cron daemon.
+- `interval`: recurring job with a persisted `interval_seconds` value. The
+  server scheduler stores `next_run_at` and re-queues the existing Worker task.
+- `cron`: reserved configuration value. V1 rejects it at the API boundary until
+  a durable cron policy and recovery behavior are implemented.
 
 ## Platform Adapter Design
 
@@ -46,9 +46,10 @@ The registry maps a platform to one adapter. The default registry installs:
   `tiktok`, and `other`.
 - `generic_public_page_adapter` for `website`.
 
-The mock adapter returns deterministic public-looking `ImageAsset` records. The
-generic public page adapter reuses the existing generic HTML image extraction
-layer and only works against a public page URL.
+The mock adapter remains a contract placeholder in the Python architecture
+layer. The Node distributed Worker only enables `generic` for real public-page
+execution; social platform jobs are reported as mock/unsupported and cannot be
+started as real jobs.
 
 ## Data Model
 
@@ -65,16 +66,14 @@ V1 introduces:
 
 ## Scheduling
 
-The V1 scheduler is `InMemoryCrawlScheduler`. It supports:
+The V1 scheduler is a database-backed in-process coordinator. It supports:
 
-- Creating sources.
-- Creating manual, interval, cron, and temporary jobs.
-- Running jobs synchronously.
-- Recording the latest run and discovered image assets.
-- Returning job status for CLI/API use.
-
-The interface is deliberately small so it can be replaced later by Redis Queue,
-Celery, APScheduler, or a database-backed scheduler.
+- Manual one-shot and temporary runs through `/api/social/jobs/:id/run`.
+- Interval runs with persisted `next_run_at` and bounded recovery polling.
+- Atomic host-level task claiming, retry waiting, timeout recovery, and
+  idempotent image URL handling.
+- A Worker pull/report contract that can later be replaced by Redis Queue,
+  Celery, or APScheduler without changing the source/job/run model.
 
 ## Safety Boundary
 
@@ -85,7 +84,9 @@ All adapters must follow these rules:
 - Do not use stolen, copied, or hard-coded cookies.
 - Do not reverse-engineer private APIs or ship cracked endpoints.
 - Do not run high-volume request loops or bulk scraping patterns.
-- Respect robots.txt and platform rules where applicable.
+- Respect robots.txt and platform rules where applicable. The V1 generic
+  adapter reads same-origin `robots.txt` before navigation and fails closed
+  when a policy response cannot be evaluated.
 - Define and enforce a rate limit policy for every platform adapter.
 - Never commit tokens, cookies, credentials, proxy accounts, or production
   configuration.

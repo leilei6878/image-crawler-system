@@ -31,11 +31,15 @@ MAX_CONCURRENCY=1
 PULL_INTERVAL_MS=5000
 ```
 
+Worker 的拉取和回传请求会同时携带 `HOST_KEY`。主控端默认启用
+`REQUIRE_WORKER_AUTH=true`，主机密钥不匹配时会返回 401；请把密钥只放在
+被控端本地的 `worker/.env` 中，不要写入仓库或日志。
+
 如果主控端在另一台机器，建议直接运行 PowerShell 安装器并传入主控端地址：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_worker.ps1 `
-  -ServerUrl "http://192.168.1.20:3000" `
+  -ServerUrl "http://<MASTER_HOST>:3000" `
   -HostKey "worker-001" `
   -HostName "Worker-001" `
   -MaxConcurrency 1
@@ -69,7 +73,7 @@ Get-Content .\logs\worker-install-status.json
 ## 常用参数
 
 ```powershell
-.\scripts\install_worker.ps1 -ServerUrl "http://192.168.1.20:3000"
+.\scripts\install_worker.ps1 -ServerUrl "http://<MASTER_HOST>:3000"
 ```
 
 覆盖已有 `worker/.env`：
@@ -110,7 +114,7 @@ Node.js 缺失时尝试用 `winget` 安装：
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_worker_installer.ps1
 ```
 
-该脚本会临时注入一个返回非 0 退出码的 `npm` shim，并确认安装器退出码非 0，同时 `logs/worker-install-status.json` 写入 `status=failed`。
+该脚本在独立临时仓库内注入 npm 安装、Playwright 安装和 node 启动前检查三种失败，分别返回 42、43、44。每次必须生成全新的状态文件，验证失败步骤及原生退出码，并确认真正的 bat 包装器返回 1。测试不修改真实 `worker/.env` 或复用历史日志。
 
 ## 手动启动 Worker
 
@@ -135,29 +139,17 @@ npm start
 - 主控端防火墙是否放行 `3000` 端口。
 - 被控端和主控端是否在同一网络或 VPN 中。
 
-## Pinterest 登录态
+## V1 采集边界
 
-当前 Pinterest 采集默认要求登录态。Worker 会优先读取以下文件：
+当前交付只启用 `generic` 公开网页采集。小红书、微博、Instagram、Pinterest、TikTok 等社媒平台适配器在 V1 中保持 mock/未支持状态，不应在 Worker 中配置登录态、cookie、storage state 或私有 API 参数。
 
-```text
-worker/cookies/pinterest-storage-state.json
-worker/cookies/pinterest.json
-```
-
-也可以通过环境变量显式指定：
+如需本地端到端测试受控 HTML 服务，可以显式设置：
 
 ```env
-PINTEREST_STORAGE_STATE_PATH=./cookies/pinterest-storage-state.json
-PINTEREST_COOKIE_PATH=./cookies/pinterest.json
+ALLOW_LOCAL_CRAWL_TARGETS=true
 ```
 
-建议优先使用 Playwright 导出的 `storage state`。如果没有有效登录态，Pinterest 任务会明确报错，而不是退回游客模式。
-
-如果你明确要允许游客采集，可以在 `worker/.env` 中加入：
-
-```env
-PINTEREST_REQUIRE_LOGIN=false
-```
+该开关只用于本机受控测试。普通采集应保持关闭，以避免页面、图片或重定向目标访问本机、内网或 link-local 地址。
 
 ## 不要提交的内容
 

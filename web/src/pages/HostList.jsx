@@ -15,7 +15,7 @@ export default function HostList({ showToast }) {
   const [form, setForm] = useState(defaultForm);
   const [submitting, setSubmitting] = useState(false);
 
-  const siteOptions = ['pinterest', 'behance', 'unsplash', 'dribbble', 'generic'];
+  const siteOptions = ['generic'];
   const tagOptions = ['general', 'high-perf', 'test', 'proxy'];
 
   useEffect(() => {

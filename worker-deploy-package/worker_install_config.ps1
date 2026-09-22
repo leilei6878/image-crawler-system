@@ -1,4 +1,4 @@
-$ServerUrl = "http://192.168.0.8:3000"
+$ServerUrl = "http://<MASTER_HOST>:3000"
 $HostKey = "worker-001"
 $HostName = "Worker-001"
 $MaxConcurrency = 5

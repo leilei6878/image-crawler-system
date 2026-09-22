@@ -1,8 +1,25 @@
 const express = require('express');
+const fs = require('fs/promises');
+const path = require('path');
+const crypto = require('crypto');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
 const loadBalancer = require('../services/loadBalancer');
+const { assertPublicHttpUrl } = require('../services/urlPolicy');
+
+const { fetchImageWithLimits } = require('../services/imageDownload');
+
+function getDownloadRoot() {
+  return path.resolve(process.env.DOWNLOAD_DIR || path.join(__dirname, '../../../downloads'));
+}
+
+function parsePositiveInt(value, fallback, max) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return max ? Math.min(parsed, max) : parsed;
+}
+
 
 router.get('/', async (req, res) => {
   try {
@@ -147,6 +164,59 @@ router.post('/:id/expand', async (req, res) => {
     res.status(500).json({ error: '扩采失败', message: err.message });
   } finally {
     conn.release();
+  }
+});
+
+router.post('/:id/download', async (req, res) => {
+  try {
+    const imageId = Number(req.params.id);
+    if (!Number.isInteger(imageId) || imageId <= 0) {
+      return res.status(400).json({ error: '图片 ID 无效' });
+    }
+    const maxBytes = parsePositiveInt(req.body?.max_bytes, 10 * 1024 * 1024, 25 * 1024 * 1024);
+    const timeoutMs = parsePositiveInt(req.body?.timeout_ms, 15000, 60000);
+    const maxRedirects = parsePositiveInt(req.body?.max_redirects, 3, 5);
+
+    const [images] = await db.execute('SELECT * FROM images WHERE id = ? AND COALESCE(status, \'\') != \'deleted\'', [imageId]);
+    if (images.length === 0) return res.status(404).json({ error: '图片不存在' });
+
+    const image = images[0];
+    const result = await fetchImageWithLimits(image.image_url, { maxBytes, timeoutMs, maxRedirects });
+    const hash = crypto.createHash('sha256').update(image.image_url).digest('hex').slice(0, 24);
+    const relativePath = path.join(`job-${image.job_id}`, `${imageId}-${hash}${result.extension}`);
+    const absolutePath = path.join(getDownloadRoot(), relativePath);
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, result.buffer, { flag: 'wx' }).catch(async (err) => {
+      if (err.code !== 'EEXIST') throw err;
+      await fs.writeFile(absolutePath, result.buffer);
+    });
+
+    await db.execute(
+      `UPDATE images
+       SET local_path = ?, content_type = ?, file_size_bytes = ?, downloaded_at = NOW()
+       WHERE id = ?`,
+      [relativePath, result.contentType, result.size, imageId]
+    );
+
+    await logger.info('image_download', `Downloaded image #${imageId}`, {
+      imageId,
+      jobId: image.job_id,
+      bytes: result.size,
+      contentType: result.contentType,
+    });
+
+    res.json({
+      id: image.id,
+      job_id: image.job_id,
+      content_type: result.contentType,
+      file_size_bytes: result.size,
+      local_path: relativePath,
+      final_url: result.finalUrl,
+    });
+  } catch (err) {
+    console.error('[Images] 下载失败:', err);
+    res.status(400).json({ error: '图片下载失败', message: err.message });
   }
 });
 

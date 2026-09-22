@@ -4,6 +4,15 @@ const api = axios.create({
   baseURL: '/api',
   timeout: 30000,
 });
+api.interceptors.request.use((config) => {
+  const token = sessionStorage.getItem('crawler-admin-token');
+  if (token) config.headers.Authorization = 'Bearer ' + token;
+  return config;
+});
+api.interceptors.response.use(response => response, error => {
+  if (error.response?.status === 401) window.dispatchEvent(new Event('crawler-auth-required'));
+  return Promise.reject(error);
+});
 
 export const jobApi = {
   list: (params) => api.get('/jobs', { params }),
@@ -32,6 +41,7 @@ export const hostApi = {
 export const imageApi = {
   list: (params) => api.get('/images', { params }),
   expand: (id, data) => api.post(`/images/${id}/expand`, data),
+  download: (id, data) => api.post(`/images/${id}/download`, data),
   delete: (id) => api.delete(`/images/${id}`),
   favorite: (id) => api.post(`/images/${id}/favorite`),
 };
@@ -45,9 +55,11 @@ export const socialApi = {
   meta: () => api.get('/social/meta'),
   listSources: (params) => api.get('/social/sources', { params }),
   createSource: (data) => api.post('/social/sources', data),
+  updateSource: (id, data) => api.patch(`/social/sources/${id}`, data),
   listJobs: (params) => api.get('/social/jobs', { params }),
   createJob: (data) => api.post('/social/jobs', data),
   runJob: (id) => api.post(`/social/jobs/${id}/run`),
+  cancelJob: (id) => api.post(`/social/jobs/${id}/cancel`),
   jobStatus: (id) => api.get(`/social/jobs/${id}/status`),
   listRuns: (params) => api.get('/social/runs', { params }),
 };

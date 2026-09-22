@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
+const { assertPublicHttpUrl } = require('../services/urlPolicy');
+
+const supportedSiteTypes = new Set(['generic']);
 
 function buildImageQuery(req, jobId) {
   const {
@@ -79,6 +82,13 @@ function toAsciiFileName(value, fallback = 'images') {
   return ascii || fallback;
 }
 
+async function normalizeInitialUrls(initialUrls) {
+  const urls = Array.isArray(initialUrls) ? initialUrls : [initialUrls];
+  return Promise.all(urls
+    .filter(Boolean)
+    .map((url) => assertPublicHttpUrl(url, 'initial_urls')));
+}
+
 router.post('/', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -89,6 +99,19 @@ router.post('/', async (req, res) => {
       page_timeout_seconds = 60, max_retry_count = 3, max_images,
       start_mode = 'immediate', scheduled_at, filters
     } = req.body;
+
+    if (!supportedSiteTypes.has(site_type)) {
+      await conn.rollback();
+      return res.status(400).json({
+        error: `site_type=${site_type} is not supported in distributed crawler V1. Use generic public website crawling only.`
+      });
+    }
+
+    const urls = await normalizeInitialUrls(initial_urls);
+    if (urls.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: '至少需要一个公开 http(s) 入口 URL' });
+    }
 
     const [hosts] = await conn.execute('SELECT id, status FROM hosts WHERE id = ?', [host_id]);
     if (hosts.length === 0) {
@@ -102,7 +125,7 @@ router.post('/', async (req, res) => {
         auto_scroll_seconds, auto_scroll_max_rounds, page_timeout_seconds,
         max_retry_count, max_images, start_mode, scheduled_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-      [name, site_type, host_id, status, JSON.stringify(initial_urls),
+      [name, site_type, host_id, status, JSON.stringify(urls),
        concurrency, auto_scroll_seconds, auto_scroll_max_rounds || 10,
        page_timeout_seconds, max_retry_count, max_images || null, start_mode,
        scheduled_at || null]
@@ -124,7 +147,6 @@ router.post('/', async (req, res) => {
       );
     }
 
-    const urls = Array.isArray(initial_urls) ? initial_urls : [initial_urls];
     for (const url of urls) {
       await conn.execute(
         `INSERT INTO page_tasks (job_id, assigned_host_id, task_type, dispatch_mode, target_url, priority, status)
@@ -146,7 +168,8 @@ router.post('/', async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error('[Jobs] 创建任务失败:', err);
-    res.status(500).json({ error: '创建任务失败', message: err.message });
+    const isValidationError = /initial_urls|url|http|private network|local/i.test(err.message || '');
+    res.status(isValidationError ? 400 : 500).json({ error: '创建任务失败', message: err.message });
   } finally {
     conn.release();
   }

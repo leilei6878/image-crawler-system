@@ -29,6 +29,7 @@ function convertQuery(sql) {
 
 // Wrapper to behave like mysql2 pool
 const db = {
+  close: () => pool.end(),
   async execute(sql, params = []) {
     const convertedSql = convertQuery(sql);
     const result = await pool.query(convertedSql, params);

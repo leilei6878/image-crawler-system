@@ -1,6 +1,6 @@
 param(
     [string]$ServerUrl = "http://127.0.0.1:3000",
-    [string]$HostKey = "local-worker-001",
+    [string]$HostKey = ([Guid]::NewGuid().ToString("N")),
     [string]$HostName = $env:COMPUTERNAME,
     [int]$MaxConcurrency = 1,
     [int]$PullIntervalMs = 5000,
@@ -231,6 +231,10 @@ Invoke-Step -Name "check-master-api" -Action {
     $response = Invoke-WebRequest -UseBasicParsing -Uri $healthUrl -TimeoutSec 10
     if ($response.StatusCode -ne 200) {
         throw "Master API health check returned HTTP $($response.StatusCode)."
+    }
+    $health = $response.Content | ConvertFrom-Json
+    if ($health.app -ne "image-crawler-system" -or $health.status -ne "ok") {
+        throw "The configured URL is not a healthy image-crawler-system API."
     }
     Write-InstallLog -Level "info" -Message "Master API is reachable: $healthUrl"
 }

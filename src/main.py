@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 
 from src.config import Settings
@@ -13,6 +14,7 @@ from src.models.social import (
 )
 from src.social import create_default_registry
 from src.social.state import JsonSocialStateStore, to_jsonable
+from src.social.api_client import run_api_command
 
 
 def configure_logging(log_level: str) -> None:
@@ -30,7 +32,10 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.command:
-        run_social_cli(args, settings)
+        if args.demo:
+            run_social_cli(args, settings)
+        else:
+            print_json(run_api_command(args))
         return
 
     crawler = ExampleCrawler(settings)
@@ -47,10 +52,12 @@ def main(argv: list[str] | None = None) -> None:
 
 def build_parser(settings: Settings) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="image-crawler-system CLI")
+    parser.add_argument("--server-url", default=os.environ.get("SERVER_URL", "http://127.0.0.1:3100"))
+    parser.add_argument("--demo", action="store_true", help="Explicit isolated Python architecture demo; not distributed business state.")
     parser.add_argument(
         "--state-file",
         default=str(Path(settings.data_dir) / "social_crawler_state.json"),
-        help="Local JSON state file for the in-memory social crawler CLI.",
+        help="Local JSON state file used only with --demo.",
     )
     subparsers = parser.add_subparsers(dest="command")
 

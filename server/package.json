@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "mock": "node src/mock-server.js"
+    "mock": "node src/mock-server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",

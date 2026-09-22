@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
-import { socialApi } from '../services/api';
+import { imageApi, socialApi } from '../services/api';
 
 const platformLabels = {
   xiaohongshu: '小红书',
@@ -58,9 +58,32 @@ function statusClass(status) {
   return `status-tag status-${status || 'pending'}`;
 }
 
+function optionValue(option) {
+  return typeof option === 'string' ? option : option.value;
+}
+
+function optionSupported(option) {
+  return typeof option === 'string' ? true : option.supported !== false;
+}
+
+function optionNote(option) {
+  return typeof option === 'string' ? '' : option.note || '';
+}
+
 function ErrorText({ value }) {
   if (!value) return null;
   return <div className="social-error">{value}</div>;
+}
+
+function runButtonLabel(job, runningJobId) {
+  if (job.execution_mode !== 'real') return '未支持';
+  if (runningJobId === job.id) return '运行中';
+  if (['failed', 'partial_failed', 'cancelled', 'completed'].includes(job.status)) return '重试';
+  return '运行';
+}
+
+function canCancelJob(job) {
+  return ['queued', 'running', 'scheduled'].includes(job.status);
 }
 
 export default function SocialCrawling({ showToast }) {
@@ -69,6 +92,7 @@ export default function SocialCrawling({ showToast }) {
   const [jobs, setJobs] = useState([]);
   const [runs, setRuns] = useState([]);
   const [sourceForm, setSourceForm] = useState(emptySource);
+  const [editingSourceId, setEditingSourceId] = useState(null);
   const [jobForm, setJobForm] = useState(emptyJob);
   const [selectedSourceId, setSelectedSourceId] = useState(null);
   const [selectedRunId, setSelectedRunId] = useState(null);
@@ -76,6 +100,8 @@ export default function SocialCrawling({ showToast }) {
   const [savingSource, setSavingSource] = useState(false);
   const [savingJob, setSavingJob] = useState(false);
   const [runningJobId, setRunningJobId] = useState(null);
+  const [cancellingJobId, setCancellingJobId] = useState(null);
+  const [downloadingImageId, setDownloadingImageId] = useState(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -122,20 +148,22 @@ export default function SocialCrawling({ showToast }) {
     setJobs(nextJobs);
     setRuns(nextRuns);
 
-    const sourceId = selectedSourceId || nextSources[0]?.id || null;
-    const runId = selectedRunId || nextRuns[0]?.id || null;
-
-    setSelectedSourceId(sourceId);
-    setSelectedRunId(runId);
+    setSelectedSourceId(current => current || nextSources[0]?.id || null);
+    setSelectedRunId(current => current || nextRuns[0]?.id || null);
     setJobForm((current) => ({
       ...current,
-      source_id: current.source_id || sourceId || ''
+      source_id: current.source_id || nextSources[0]?.id || ''
     }));
   }
 
   const selectedSource = useMemo(
     () => sources.find((source) => source.id === Number(selectedSourceId)) || null,
     [sources, selectedSourceId]
+  );
+
+  const selectedJobSource = useMemo(
+    () => sources.find((source) => source.id === Number(jobForm.source_id)) || null,
+    [sources, jobForm.source_id]
   );
 
   const selectedRun = useMemo(
@@ -179,9 +207,12 @@ export default function SocialCrawling({ showToast }) {
           burst: Number(sourceForm.rate_limit_policy.burst)
         }
       };
-      const res = await socialApi.createSource(payload);
-      showToast?.('账号源已创建', 'success');
-      setSourceForm(emptySource);
+      const res = editingSourceId
+        ? await socialApi.updateSource(editingSourceId, payload)
+        : await socialApi.createSource(payload);
+      showToast?.(editingSourceId ? '账号源已更新' : '账号源已创建', 'success');
+      setEditingSourceId(null);
+      setSourceForm({ ...emptySource, rate_limit_policy: { ...emptySource.rate_limit_policy } });
       setSelectedSourceId(res.data.id);
       setJobForm((current) => ({
         ...current,
@@ -196,6 +227,37 @@ export default function SocialCrawling({ showToast }) {
       showToast?.(err.response?.data?.error || '创建账号源失败', 'error');
     } finally {
       setSavingSource(false);
+    }
+  }
+
+  function beginEditSource(source) {
+    setEditingSourceId(source.id);
+    setSourceForm({
+      platform: source.platform,
+      account_name: source.account_name,
+      profile_url: source.profile_url,
+      crawl_mode: source.crawl_mode,
+      schedule_type: source.schedule_type,
+      max_items: source.max_items,
+      rate_limit_policy: { ...emptySource.rate_limit_policy, ...(source.rate_limit_policy || {}) },
+      notes: source.notes || ''
+    });
+  }
+
+  function cancelEditSource() {
+    setEditingSourceId(null);
+    setSourceForm({ ...emptySource, rate_limit_policy: { ...emptySource.rate_limit_policy } });
+  }
+
+  async function toggleSource(source) {
+    if (source.status === 'unsupported') return;
+    const nextStatus = source.status === 'active' ? 'disabled' : 'active';
+    try {
+      await socialApi.updateSource(source.id, { status: nextStatus });
+      showToast?.(nextStatus === 'active' ? '账号源已启用' : '账号源已停用', 'success');
+      await loadLists();
+    } catch (err) {
+      showToast?.(err.response?.data?.error || '更新账号源状态失败', 'error');
     }
   }
 
@@ -232,13 +294,43 @@ export default function SocialCrawling({ showToast }) {
     setRunningJobId(jobId);
     try {
       const res = await socialApi.runJob(jobId);
-      showToast?.(`任务已运行，采集到 ${res.data.run.image_count} 张图片`, 'success');
+      showToast?.('任务已入队，等待 Worker 执行', 'success');
       setSelectedRunId(res.data.run.id);
       await loadLists();
     } catch (err) {
       showToast?.(err.response?.data?.error || '运行任务失败', 'error');
     } finally {
       setRunningJobId(null);
+    }
+  }
+
+  async function handleCancelJob(jobId) {
+    setCancellingJobId(jobId);
+    try {
+      await socialApi.cancelJob(jobId);
+      showToast?.('任务已取消', 'success');
+      await loadLists();
+    } catch (err) {
+      showToast?.(err.response?.data?.error || '取消任务失败', 'error');
+    } finally {
+      setCancellingJobId(null);
+    }
+  }
+
+  async function handleDownloadImage(imageId) {
+    setDownloadingImageId(imageId);
+    try {
+      await imageApi.download(imageId, {
+        max_bytes: 10 * 1024 * 1024,
+        timeout_ms: 15000,
+        max_redirects: 3
+      });
+      showToast?.('图片已保存到本地 downloads 目录', 'success');
+      await loadLists();
+    } catch (err) {
+      showToast?.(err.response?.data?.message || err.response?.data?.error || '图片保存失败', 'error');
+    } finally {
+      setDownloadingImageId(null);
     }
   }
 
@@ -298,7 +390,7 @@ export default function SocialCrawling({ showToast }) {
       <div className="social-workbench">
         <form className="card social-form-card" onSubmit={handleCreateSource}>
           <div className="card-header">
-            <h3>创建账号源</h3>
+            <h3>{editingSourceId ? '编辑账号源' : '创建账号源'}</h3>
           </div>
 
           <div className="form-row">
@@ -307,11 +399,19 @@ export default function SocialCrawling({ showToast }) {
               <select
                 className="form-control"
                 value={sourceForm.platform}
+                disabled={Boolean(editingSourceId)}
                 onChange={(event) => updateSourceField('platform', event.target.value)}
               >
-                {(meta.platforms.length ? meta.platforms : Object.keys(platformLabels)).map((platform) => (
-                  <option key={platform} value={platform}>{platformLabels[platform] || platform}</option>
-                ))}
+                {(meta.platforms.length ? meta.platforms : Object.keys(platformLabels)).map((option) => {
+                  const platform = optionValue(option);
+                  const supported = optionSupported(option);
+                  const note = optionNote(option);
+                  return (
+                    <option key={platform} value={platform}>
+                      {platformLabels[platform] || platform}{supported ? '' : '（mock/未支持）'}{note ? ` - ${note}` : ''}
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <div className="form-group">
@@ -345,9 +445,10 @@ export default function SocialCrawling({ showToast }) {
                 value={sourceForm.crawl_mode}
                 onChange={(event) => updateSourceField('crawl_mode', event.target.value)}
               >
-                {(meta.crawl_modes.length ? meta.crawl_modes : Object.keys(crawlModeLabels)).map((mode) => (
-                  <option key={mode} value={mode}>{crawlModeLabels[mode] || mode}</option>
-                ))}
+                {(meta.crawl_modes.length ? meta.crawl_modes : Object.keys(crawlModeLabels)).map((option) => {
+                  const mode = optionValue(option);
+                  return <option key={mode} value={mode}>{crawlModeLabels[mode] || mode}</option>;
+                })}
               </select>
             </div>
             <div className="form-group">
@@ -357,9 +458,15 @@ export default function SocialCrawling({ showToast }) {
                 value={sourceForm.schedule_type}
                 onChange={(event) => updateSourceField('schedule_type', event.target.value)}
               >
-                {(meta.schedule_types.length ? meta.schedule_types : Object.keys(scheduleLabels)).map((type) => (
-                  <option key={type} value={type}>{scheduleLabels[type] || type}</option>
-                ))}
+                {(meta.schedule_types.length ? meta.schedule_types : Object.keys(scheduleLabels)).map((option) => {
+                  const type = optionValue(option);
+                  const supported = optionSupported(option);
+                  return (
+                    <option key={type} value={type} disabled={!supported}>
+                      {scheduleLabels[type] || type}{supported ? '' : '（未实现）'}
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <div className="form-group">
@@ -418,9 +525,12 @@ export default function SocialCrawling({ showToast }) {
             />
           </div>
 
-          <button className="btn btn-primary" disabled={savingSource} type="submit">
-            {savingSource ? '创建中...' : '创建账号源'}
-          </button>
+          <div className="action-group">
+            <button className="btn btn-primary" disabled={savingSource} type="submit">
+              {savingSource ? '保存中...' : editingSourceId ? '保存账号源' : '创建账号源'}
+            </button>
+            {editingSourceId && <button className="btn btn-outline" type="button" onClick={cancelEditSource}>取消编辑</button>}
+          </div>
         </form>
 
         <form className="card social-form-card" onSubmit={handleCreateJob}>
@@ -433,16 +543,25 @@ export default function SocialCrawling({ showToast }) {
             <select
               className="form-control"
               value={jobForm.source_id}
-              onChange={(event) => updateJobField('source_id', event.target.value)}
+              onChange={(event) => {
+                updateJobField('source_id', event.target.value);
+                setSelectedSourceId(event.target.value || null);
+              }}
               required
             >
               <option value="">选择账号源</option>
               {sources.map((source) => (
-                <option key={source.id} value={source.id}>
+                <option key={source.id} value={source.id} disabled={source.status !== 'active'}>
                   #{source.id} {source.account_name} / {platformLabels[source.platform] || source.platform}
+                  {source.execution_mode === 'real' ? ' / 真实' : ' / mock未支持'}
                 </option>
               ))}
             </select>
+            {selectedJobSource?.status !== 'active' && (
+              <div className="form-hint">
+                当前来源为 {selectedJobSource?.status}，V1 只允许运行公开网站来源；社媒平台真实适配器后续单独接入。
+              </div>
+            )}
           </div>
 
           <div className="form-row-3">
@@ -461,13 +580,19 @@ export default function SocialCrawling({ showToast }) {
             <div className="form-group">
               <label>调度类型</label>
               <select
-                className="form-control"
-                value={jobForm.schedule_type}
-                onChange={(event) => updateJobField('schedule_type', event.target.value)}
-              >
-                {Object.keys(scheduleLabels).map((type) => (
-                  <option key={type} value={type}>{scheduleLabels[type]}</option>
-                ))}
+              className="form-control"
+              value={jobForm.schedule_type}
+              onChange={(event) => updateJobField('schedule_type', event.target.value)}
+            >
+                {(meta.schedule_types.length ? meta.schedule_types : Object.keys(scheduleLabels)).map((option) => {
+                  const type = optionValue(option);
+                  const supported = optionSupported(option);
+                  return (
+                    <option key={type} value={type} disabled={!supported}>
+                      {scheduleLabels[type] || type}{supported ? '' : '（未实现）'}
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <div className="form-group">
@@ -518,7 +643,11 @@ export default function SocialCrawling({ showToast }) {
             />
           </div>
 
-          <button className="btn btn-primary" disabled={savingJob || sources.length === 0} type="submit">
+          <button
+            className="btn btn-primary"
+            disabled={savingJob || sources.length === 0 || !jobForm.source_id || selectedJobSource?.status !== 'active'}
+            type="submit"
+          >
             {savingJob ? '创建中...' : '创建采集任务'}
           </button>
         </form>
@@ -528,7 +657,9 @@ export default function SocialCrawling({ showToast }) {
         <section className="card">
           <div className="card-header">
             <h3>账号源</h3>
-            <span className="tag">{selectedSource ? selectedSource.adapter : 'adapter'}</span>
+            <span className="tag">
+              {selectedSource ? `${selectedSource.execution_mode || 'unknown'} / ${selectedSource.adapter}` : 'adapter'}
+            </span>
           </div>
           <div className="table-container">
             <table>
@@ -541,6 +672,7 @@ export default function SocialCrawling({ showToast }) {
                   <th>任务</th>
                   <th>图片</th>
                   <th>上次采集</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -555,11 +687,32 @@ export default function SocialCrawling({ showToast }) {
                       <div className="strong-cell">{source.account_name}</div>
                       <div className="muted-cell">{source.profile_url}</div>
                     </td>
-                    <td><span className="tag">{platformLabels[source.platform] || source.platform}</span></td>
+                    <td>
+                      <span className="tag">{platformLabels[source.platform] || source.platform}</span>
+                      <div className="muted-cell">{source.execution_mode || 'unknown'}</div>
+                    </td>
                     <td><span className={statusClass(source.status)}>{source.status}</span></td>
                     <td>{source.job_count}</td>
                     <td>{source.image_count}</td>
                     <td>{formatTime(source.last_crawled_at)}</td>
+                    <td>
+                      <div className="action-group">
+                        <button
+                          className="btn btn-xs btn-outline"
+                          onClick={(event) => { event.stopPropagation(); beginEditSource(source); }}
+                        >
+                          编辑
+                        </button>
+                        {source.status !== 'unsupported' && (
+                          <button
+                            className="btn btn-xs btn-warning"
+                            onClick={(event) => { event.stopPropagation(); toggleSource(source); }}
+                          >
+                            {source.status === 'active' ? '停用' : '启用'}
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -596,13 +749,27 @@ export default function SocialCrawling({ showToast }) {
                     <td>{job.image_count || 0}</td>
                     <td>{formatTime(job.created_at)}</td>
                     <td>
-                      <button
-                        className="btn btn-xs btn-success"
-                        disabled={runningJobId === job.id}
-                        onClick={() => handleRunJob(job.id)}
-                      >
-                        {runningJobId === job.id ? '运行中' : '运行'}
-                      </button>
+                      <div className="action-group">
+                        <button
+                          className="btn btn-xs btn-success"
+                          disabled={
+                            runningJobId === job.id ||
+                            job.execution_mode !== 'real' ||
+                            ['queued', 'running'].includes(job.status)
+                          }
+                          onClick={() => handleRunJob(job.id)}
+                          title={job.execution_mode !== 'real' ? '该平台 V1 尚未接入真实公开采集适配器' : '运行任务'}
+                        >
+                          {runButtonLabel(job, runningJobId)}
+                        </button>
+                        <button
+                          className="btn btn-xs btn-warning"
+                          disabled={!canCancelJob(job) || cancellingJobId === job.id}
+                          onClick={() => handleCancelJob(job.id)}
+                        >
+                          {cancellingJobId === job.id ? '取消中' : '取消'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -637,6 +804,7 @@ export default function SocialCrawling({ showToast }) {
               <span>开始：{formatTime(selectedRun.started_at)}</span>
               <span>结束：{formatTime(selectedRun.finished_at)}</span>
             </div>
+            <ErrorText value={selectedRun.error_message || selectedRun.error} />
             <div className="social-image-grid">
               {(selectedRun.images || []).map((image) => (
                 <article key={image.id} className="social-image-card">
@@ -644,11 +812,20 @@ export default function SocialCrawling({ showToast }) {
                   <div className="social-image-body">
                     <div className="strong-cell">{image.title || 'Untitled'}</div>
                     <div className="muted-cell">{image.width || '-'} x {image.height || '-'}</div>
+                    {image.local_path && <div className="muted-cell">{image.local_path}</div>}
                     <a href={image.source_url} target="_blank" rel="noreferrer">来源页面</a>
+                    <button
+                      className="btn btn-xs btn-outline"
+                      disabled={downloadingImageId === image.id}
+                      onClick={() => handleDownloadImage(image.id)}
+                    >
+                      {downloadingImageId === image.id ? '保存中' : '保存'}
+                    </button>
                   </div>
                 </article>
               ))}
             </div>
+            {(selectedRun.images || []).length === 0 && <div className="empty">本次运行暂无图片资产</div>}
           </>
         ) : (
           <div className="empty">暂无运行结果</div>

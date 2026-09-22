@@ -19,7 +19,7 @@
 - `02_start_worker.bat`
   - 手动启动 Worker。
 - `03_update_worker.bat`
-  - 更新到 GitHub 最新版本，并保留已有 cookies。
+  - 更新到 GitHub 最新版本，并保留本地 Worker 运行配置。
 - `04_enable_autostart.bat`
   - 设置开机自启。
 - `05_disable_autostart.bat`
@@ -38,7 +38,7 @@
 打开 `worker_install_config.ps1`，至少改这几个值：
 
 ```powershell
-$ServerUrl = "http://192.168.0.8:3000"
+$ServerUrl = "http://<MASTER_HOST>:3000"
 $HostKey = "worker-001"
 $HostName = "Worker-001"
 $MaxConcurrency = 5
@@ -76,13 +76,9 @@ logs\worker-install.log
 logs\worker-install-status.json
 ```
 
-### 3. 放 Pinterest 登录态
+### 3. V1 采集边界
 
-如果需要 Pinterest 登录采集，把登录态文件放到：
-
-```text
-runtime\repo\image-crawler-system-codex-worker-installer\worker\cookies\pinterest.json
-```
+当前部署包只用于 `generic` 公开网页采集。不要把 cookie、storage state、账号密码、代理账号或私有 API 参数放入 Worker 目录。社媒平台真实适配器后续需要单独合规接入。
 
 ### 4. 手动启动
 
@@ -111,7 +107,7 @@ runtime\repo\image-crawler-system-codex-worker-installer\worker\cookies\pinteres
 
 - 从 GitHub 下载最新分支 zip
 - 覆盖 runtime 中的代码
-- 保留已有 `cookies/`
+- 保留已有 Worker `.env` 和本地运行配置
 - 重新写入 `.env`
 
 ### 6. 开机自启
@@ -139,7 +135,7 @@ runtime\repo\image-crawler-system-codex-worker-installer\worker\cookies\pinteres
 先在新电脑 PowerShell 手动试：
 
 ```powershell
-Invoke-WebRequest http://192.168.0.8:3000/api/health
+Invoke-WebRequest http://<MASTER_HOST>:3000/api/health
 ```
 
 ### 3. 主机删了又回来

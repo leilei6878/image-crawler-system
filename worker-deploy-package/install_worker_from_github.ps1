@@ -22,7 +22,6 @@ $logsDir = Join-Path $packageRoot "logs"
 $logFile = Join-Path $logsDir "worker-install.log"
 $statusFile = Join-Path $logsDir "worker-install-status.json"
 $zipPath = Join-Path $runtimeRoot "image-crawler-system-worker.zip"
-$cookiesBackupDir = Join-Path $backupRoot "cookies"
 
 function Ensure-Directory {
     param([string]$Path)
@@ -82,13 +81,66 @@ function Test-CommandExists {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory,
+        [switch]$PassThru
+    )
+
+    $displayCommand = $FilePath
+    if ($ArgumentList.Count -gt 0) {
+        $displayCommand = "$FilePath $($ArgumentList -join ' ')"
+    }
+
+    Write-InstallLog -Level "info" -Message "Running: $displayCommand"
+    $previousLocation = Get-Location
+    if ($WorkingDirectory) {
+        Push-Location $WorkingDirectory
+    }
+
+    try {
+        $global:LASTEXITCODE = 0
+        if ($PassThru) {
+            $output = & $FilePath @ArgumentList
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) { $exitCode = 0 }
+            if ($exitCode -ne 0) {
+                throw "Native command failed with exit code ${exitCode}: $displayCommand"
+            }
+            return $output
+        }
+
+        & $FilePath @ArgumentList
+        $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode) { $exitCode = 0 }
+        if ($exitCode -ne 0) {
+            throw "Native command failed with exit code ${exitCode}: $displayCommand"
+        }
+    }
+    finally {
+        if ($WorkingDirectory) {
+            Set-Location $previousLocation
+        }
+    }
+}
+
 function Install-NodeWithWinget {
     if (-not (Test-CommandExists "winget")) {
         throw "Node.js is missing and winget is not available. Install Node.js 20+ manually and rerun."
     }
 
     Write-InstallLog -Level "info" -Message "Installing Node.js LTS with winget."
-    winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+    Invoke-NativeCommand -FilePath "winget" -ArgumentList @(
+        "install",
+        "OpenJS.NodeJS.LTS",
+        "--scope", "user",
+        "--disable-interactivity",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+    )
 
     $defaultNodePath = "C:\Program Files\nodejs"
     if (Test-Path -LiteralPath $defaultNodePath) {
@@ -104,21 +156,6 @@ function Remove-DirectorySafe {
         throw "Refusing to remove path outside runtime root: $resolved"
     }
     Remove-Item -LiteralPath $resolved -Recurse -Force
-}
-
-function Backup-Cookies {
-    $existingCookiesDir = Join-Path $workerDir "cookies"
-    if (-not (Test-Path -LiteralPath $existingCookiesDir)) { return }
-
-    Remove-DirectorySafe -Path $cookiesBackupDir
-    Ensure-Directory -Path $backupRoot
-    Copy-Item -Path $existingCookiesDir -Destination $cookiesBackupDir -Recurse -Force
-}
-
-function Restore-Cookies {
-    Ensure-Directory -Path (Join-Path $workerDir "cookies")
-    if (-not (Test-Path -LiteralPath $cookiesBackupDir)) { return }
-    Copy-Item -Path (Join-Path $cookiesBackupDir "*") -Destination (Join-Path $workerDir "cookies") -Recurse -Force
 }
 
 Ensure-Directory -Path $runtimeRoot
@@ -139,13 +176,12 @@ Invoke-Step -Name "check-node" -Action {
         throw "npm was not found. Reinstall Node.js 20+ and rerun."
     }
 
-    $nodeVersion = (& node --version)
-    $npmVersion = (& npm --version)
+    $nodeVersion = (Invoke-NativeCommand -FilePath "node" -ArgumentList @("--version") -PassThru) -join "`n"
+    $npmVersion = (Invoke-NativeCommand -FilePath "npm" -ArgumentList @("--version") -PassThru) -join "`n"
     Write-InstallLog -Level "info" -Message "node=$nodeVersion npm=$npmVersion"
 }
 
 Invoke-Step -Name "download-repo" -Action {
-    Backup-Cookies
     $archiveUrl = "https://github.com/leilei6878/image-crawler-system/archive/refs/heads/$Branch.zip"
     Write-InstallLog -Level "info" -Message "Downloading $archiveUrl"
     Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile $zipPath
@@ -173,18 +209,8 @@ SCREENSHOT_DIR=./screenshots
     Ensure-Directory -Path (Join-Path $workerDir "screenshots")
 }
 
-Invoke-Step -Name "restore-cookies" -Action {
-    Restore-Cookies
-}
-
 Invoke-Step -Name "install-worker-dependencies" -Action {
-    Push-Location $workerDir
-    try {
-        npm.cmd install
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("install") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "install-browser" -Action {
@@ -192,13 +218,7 @@ Invoke-Step -Name "install-browser" -Action {
         Write-InstallLog -Level "info" -Message "Skipping Playwright browser install by request."
         return
     }
-    Push-Location $workerDir
-    try {
-        npx playwright install chromium
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "npx.cmd" -ArgumentList @("playwright", "install", "chromium") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "validate-connectivity" -Action {
@@ -212,7 +232,7 @@ Invoke-Step -Name "validate-connectivity" -Action {
 
 if ($StartWorker) {
     Invoke-Step -Name "start-worker" -Action {
-        Start-Process -FilePath "powershell.exe" -WorkingDirectory $workerDir -ArgumentList @(
+        Start-Process -FilePath "powershell.exe" -WindowStyle Hidden -WorkingDirectory $workerDir -ArgumentList @(
             "-NoExit",
             "-Command",
             "npm.cmd start"

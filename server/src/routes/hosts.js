@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
+const { secretsEqual } = require('../services/workerAuth');
 
 async function getHeartbeatTimeoutSeconds(dbConn) {
   const [settings] = await dbConn.execute(
@@ -164,10 +165,14 @@ router.post('/heartbeat', async (req, res) => {
     const [hosts] = await conn.execute('SELECT * FROM hosts WHERE host_key = ?', [host_key]);
 
     if (hosts.length === 0) {
+      if (!process.env.WORKER_REGISTRATION_TOKEN ||
+          !secretsEqual(req.body.registration_token, process.env.WORKER_REGISTRATION_TOKEN)) {
+        return res.status(401).json({ error: 'Worker registration token required' });
+      }
       // 自动注册
       const [rows] = await conn.execute(
-        `INSERT INTO hosts (name, host_key, status, max_concurrency, accept_global_expand, host_tags, supported_sites)
-         VALUES (?, ?, 'online', ?, true, ?, ?) RETURNING id`,
+        `INSERT INTO hosts (name, host_key, status, max_concurrency, accept_global_expand, host_tags, supported_sites, last_heartbeat_at)
+         VALUES (?, ?, 'online', ?, true, ?, ?, NOW()) RETURNING id`,
         [host_name || host_key, host_key, max_concurrency || 5,
          JSON.stringify(tags), JSON.stringify(supported_sites)]
       );
@@ -202,25 +207,32 @@ router.post('/heartbeat', async (req, res) => {
 
       if (parseInt(running_count, 10) === 0) {
         const [staleTasks] = await conn.execute(
-          `SELECT pt.id, pt.retry_count, IFNULL(j.max_retry_count, 3) as max_retry_count
+          `SELECT pt.id, pt.retry_count, j.max_retry_count,
+                  pt.started_at, j.page_timeout_seconds, j.auto_scroll_seconds
            FROM page_tasks pt
            JOIN jobs j ON j.id = pt.job_id
            WHERE pt.assigned_host_id = ?
-             AND pt.status = 'running'
-             AND TIMESTAMPDIFF(
-               SECOND,
-               pt.started_at,
-               NOW()
-             ) > GREATEST(IFNULL(j.page_timeout_seconds, 60) + IFNULL(j.auto_scroll_seconds, 30) + 30, 120)`,
+             AND pt.status = 'running'`,
           [host.id]
         );
 
         for (const task of staleTasks) {
-          if (parseInt(task.retry_count, 10) < parseInt(task.max_retry_count, 10)) {
+          const startedAt = new Date(task.started_at).getTime();
+          const timeoutSeconds = Math.max(
+            (parseInt(task.page_timeout_seconds, 10) || 60) +
+            (parseInt(task.auto_scroll_seconds, 10) || 30) + 30,
+            120
+          );
+          if (!Number.isFinite(startedAt) || Date.now() - startedAt <= timeoutSeconds * 1000) {
+            continue;
+          }
+          if (parseInt(task.retry_count, 10) < (parseInt(task.max_retry_count, 10) || 3)) {
             await conn.execute(
               `UPDATE page_tasks
                SET status = 'retry_waiting',
                    retry_count = retry_count + 1,
+                   lease_token = NULL,
+                   lease_expires_at = NULL,
                    error_message = 'Recovered stale running task on heartbeat',
                    updated_at = NOW()
                WHERE id = ?`,
@@ -231,6 +243,8 @@ router.post('/heartbeat', async (req, res) => {
               `UPDATE page_tasks
                SET status = 'failed',
                    finished_at = NOW(),
+                   lease_token = NULL,
+                   lease_expires_at = NULL,
                    error_message = 'Recovered stale running task on heartbeat',
                    updated_at = NOW()
                WHERE id = ?`,

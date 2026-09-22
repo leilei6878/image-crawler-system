@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { BrowserRouter as Router, NavLink, Route, Routes } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import HostList from './pages/HostList';
@@ -7,6 +7,7 @@ import JobDetail from './pages/JobDetail';
 import JobList from './pages/JobList';
 import LogList from './pages/LogList';
 import SocialCrawling from './pages/SocialCrawling';
+import Login from './pages/Login';
 
 function Toast({ toasts }) {
   return (
@@ -22,6 +23,12 @@ function Toast({ toasts }) {
 
 export default function App() {
   const [toasts, setToasts] = useState([]);
+  const [authenticated, setAuthenticated] = useState(Boolean(sessionStorage.getItem('crawler-admin-token')));
+  useEffect(() => {
+    const expired = () => setAuthenticated(false);
+    window.addEventListener('crawler-auth-required', expired);
+    return () => window.removeEventListener('crawler-auth-required', expired);
+  }, []);
 
   const showToast = useCallback((message, type = 'info') => {
     const id = Date.now();
@@ -31,6 +38,7 @@ export default function App() {
     }, 3000);
   }, []);
 
+  if (!authenticated) return <Login onAuthenticated={() => setAuthenticated(true)} />;
   return (
     <Router>
       <div className="app-layout">

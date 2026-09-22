@@ -1,6 +1,6 @@
 param(
     [string]$ServerUrl = "http://127.0.0.1:3000",
-    [string]$HostKey = "local-worker-001",
+    [string]$HostKey = ([Guid]::NewGuid().ToString("N")),
     [string]$HostName = $env:COMPUTERNAME,
     [int]$MaxConcurrency = 1,
     [int]$PullIntervalMs = 5000,
@@ -8,7 +8,8 @@ param(
     [switch]$InstallNodeIfMissing,
     [switch]$SkipBrowserInstall,
     [switch]$SkipConnectivityCheck,
-    [switch]$StartWorker
+    [switch]$StartWorker,
+    [string]$LogDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +17,11 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $workerDir = Join-Path $repoRoot "worker"
-$logDir = Join-Path $repoRoot "logs"
+$logDir = if ([string]::IsNullOrWhiteSpace($LogDirectory)) {
+    Join-Path $repoRoot "logs"
+} else {
+    [System.IO.Path]::GetFullPath($LogDirectory)
+}
 $logFile = Join-Path $logDir "worker-install.log"
 $statusFile = Join-Path $logDir "worker-install-status.json"
 $envFile = Join-Path $workerDir ".env"
@@ -73,6 +78,57 @@ function Invoke-Step {
     }
 }
 
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory,
+        [switch]$PassThru
+    )
+
+    $displayCommand = $FilePath
+    if ($ArgumentList.Count -gt 0) {
+        $displayCommand = "$FilePath $($ArgumentList -join ' ')"
+    }
+
+    Write-InstallLog -Level "info" -Message "Running: $displayCommand"
+
+    $previousLocation = Get-Location
+    if ($WorkingDirectory) {
+        Push-Location $WorkingDirectory
+    }
+
+    try {
+        $global:LASTEXITCODE = 0
+        if ($PassThru) {
+            $output = & $FilePath @ArgumentList
+            $exitCode = $LASTEXITCODE
+            if ($null -eq $exitCode) {
+                $exitCode = 0
+            }
+            if ($exitCode -ne 0) {
+                throw "Native command failed with exit code ${exitCode}: $displayCommand"
+            }
+            return $output
+        }
+
+        & $FilePath @ArgumentList
+        $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode) {
+            $exitCode = 0
+        }
+        if ($exitCode -ne 0) {
+            throw "Native command failed with exit code ${exitCode}: $displayCommand"
+        }
+    }
+    finally {
+        if ($WorkingDirectory) {
+            Set-Location $previousLocation
+        }
+    }
+}
+
 function Test-CommandExists {
     param([string]$Name)
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
@@ -84,7 +140,14 @@ function Install-NodeWithWinget {
     }
 
     Write-InstallLog -Level "info" -Message "Installing Node.js LTS with winget."
-    winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+    Invoke-NativeCommand -FilePath "winget" -ArgumentList @(
+        "install",
+        "OpenJS.NodeJS.LTS",
+        "--scope", "user",
+        "--disable-interactivity",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+    )
 
     $defaultNodePath = "C:\Program Files\nodejs"
     if (Test-Path -LiteralPath $defaultNodePath) {
@@ -118,19 +181,13 @@ Invoke-Step -Name "check-node" -Action {
         throw "npm was not found. Reinstall Node.js 20+ and rerun this script."
     }
 
-    $nodeVersion = (& node --version)
-    $npmVersion = (& npm --version)
+    $nodeVersion = (Invoke-NativeCommand -FilePath "node" -ArgumentList @("--version") -PassThru) -join "`n"
+    $npmVersion = (Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("--version") -PassThru) -join "`n"
     Write-InstallLog -Level "info" -Message "node=$nodeVersion npm=$npmVersion"
 }
 
 Invoke-Step -Name "install-worker-dependencies" -Action {
-    Push-Location $workerDir
-    try {
-        npm install
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("install") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "install-browser" -Action {
@@ -139,13 +196,7 @@ Invoke-Step -Name "install-browser" -Action {
         return
     }
 
-    Push-Location $workerDir
-    try {
-        npx playwright install chromium
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "npx.cmd" -ArgumentList @("playwright", "install", "chromium") -WorkingDirectory $workerDir
 }
 
 Invoke-Step -Name "write-env" -Action {
@@ -166,14 +217,8 @@ SCREENSHOT_DIR=./screenshots
 }
 
 Invoke-Step -Name "validate-worker-code" -Action {
-    Push-Location $repoRoot
-    try {
-        node --check worker\src\index.js
-        node --check worker\src\browser\pool.js
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-NativeCommand -FilePath "node" -ArgumentList @("--check", "worker\src\index.js") -WorkingDirectory $repoRoot
+    Invoke-NativeCommand -FilePath "node" -ArgumentList @("--check", "worker\src\browser\pool.js") -WorkingDirectory $repoRoot
 }
 
 Invoke-Step -Name "check-master-api" -Action {
@@ -187,12 +232,17 @@ Invoke-Step -Name "check-master-api" -Action {
     if ($response.StatusCode -ne 200) {
         throw "Master API health check returned HTTP $($response.StatusCode)."
     }
+    $health = $response.Content | ConvertFrom-Json
+    if ($health.app -ne "image-crawler-system" -or $health.status -ne "ok") {
+        throw "The configured URL is not a healthy image-crawler-system API."
+    }
     Write-InstallLog -Level "info" -Message "Master API is reachable: $healthUrl"
 }
 
 if ($StartWorker) {
     Invoke-Step -Name "start-worker" -Action {
-        Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm start" -WorkingDirectory $workerDir
+        Invoke-NativeCommand -FilePath "npm.cmd" -ArgumentList @("--version") -WorkingDirectory $workerDir | Out-Null
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm start" -WorkingDirectory $workerDir -WindowStyle Hidden
     }
 }
 

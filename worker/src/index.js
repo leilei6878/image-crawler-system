@@ -3,145 +3,120 @@ const axios = require('axios');
 const { BrowserPool } = require('./browser/pool');
 const AdapterFactory = require('./adapters/factory');
 const { v4: uuidv4 } = require('uuid');
+const { passesFilter } = require('./filter');
+const RateLimiter = require('./rateLimiter');
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
-const HOST_KEY = process.env.HOST_KEY || 'dev-host-key-001';
+const HOST_KEY = process.env.HOST_KEY;
 const HOST_NAME = process.env.HOST_NAME || 'LocalWorker';
-const MAX_CONCURRENCY = parseInt(process.env.MAX_CONCURRENCY || '3');
-const PULL_INTERVAL = parseInt(process.env.PULL_INTERVAL_MS || '5000');
+let maxConcurrency = parseInt(process.env.MAX_CONCURRENCY || '3', 10);
+const PULL_INTERVAL = parseInt(process.env.PULL_INTERVAL_MS || '5000', 10);
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || './screenshots';
 
 const api = axios.create({ baseURL: SERVER_URL, timeout: 30000 });
 
 let hostId = null;
 let running = 0;
+const rateLimiter = new RateLimiter();
 
-function passesFilter(img, filter) {
-  if (!filter) return true;
-  const mode = filter.logic_mode || 'and';
+function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} exceeded timeout ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
 
-  if (filter.exclude_video) {
-    const url = (img.image_url || '').toLowerCase();
-    if (url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.mov') || url.includes('video')) {
-      return false;
-    }
-  }
-
-  if (filter.exclude_collage) {
-    const url = (img.image_url || '').toLowerCase();
-    if (url.includes('collage') || url.includes('grid')) {
-      return false;
-    }
-  }
-
-  const checks = [];
-
-  if (filter.min_like && filter.min_like > 0) {
-    const val = parseInt(img.like_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_like);
-    }
-  }
-  if (filter.min_favorite && filter.min_favorite > 0) {
-    const val = parseInt(img.favorite_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_favorite);
-    }
-  }
-  if (filter.min_comment && filter.min_comment > 0) {
-    const val = parseInt(img.comment_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_comment);
-    }
-  }
-  if (filter.min_share && filter.min_share > 0) {
-    const val = parseInt(img.share_count);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_share);
-    }
-  }
-  if (filter.min_width && filter.min_width > 0) {
-    const val = parseInt(img.width);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_width);
-    }
-  }
-  if (filter.min_height && filter.min_height > 0) {
-    const val = parseInt(img.height);
-    if (val && val > 0) {
-      checks.push(val >= filter.min_height);
-    }
-  }
-
-  if (checks.length === 0) return true;
-
-  if (mode === 'or') {
-    return checks.some(c => c);
-  }
-  return checks.every(c => c);
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
-async function heartbeat() {
+async function heartbeat(pool) {
   try {
     const res = await api.post('/api/hosts/heartbeat', {
       host_key: HOST_KEY,
       host_name: HOST_NAME,
-      max_concurrency: MAX_CONCURRENCY,
-      supported_sites: ['pinterest', 'behance', 'unsplash', 'dribbble', 'generic'],
+      registration_token: process.env.WORKER_REGISTRATION_TOKEN,
+      max_concurrency: maxConcurrency,
+      supported_sites: AdapterFactory.supportedSiteTypes(),
       running_count: running,
     });
+
     if (res.data.host_id) {
       hostId = res.data.host_id;
     }
+
+    const serverConcurrency = parseInt(res.data.max_concurrency, 10);
+    if (serverConcurrency && serverConcurrency !== maxConcurrency) {
+      const previous = maxConcurrency;
+      maxConcurrency = serverConcurrency;
+      if (pool) {
+        await pool.resize(maxConcurrency);
+      }
+      console.log(`[Worker] Updated max concurrency from server: ${previous} -> ${maxConcurrency}`);
+    }
+
     console.log(`[Heartbeat] OK - hostId=${hostId} running=${running}`);
   } catch (err) {
-    console.error('[Heartbeat] 失败:', err.message);
+    console.error('[Heartbeat] failed:', err.message);
   }
 }
 
 async function pullAndExecute(pool) {
   if (!hostId) return;
-  const available = Math.max(0, MAX_CONCURRENCY - running);
+  const available = Math.max(0, maxConcurrency - running);
   if (available <= 0) return;
 
   try {
     const res = await api.post('/api/tasks/pull', {
       host_id: hostId,
+      host_key: HOST_KEY,
       max_tasks: available
     });
 
     const tasks = res.data.tasks || [];
     if (tasks.length === 0) return;
 
-    console.log(`[Worker] 拉取到 ${tasks.length} 个任务`);
+    console.log(`[Worker] Pulled ${tasks.length} task(s)`);
 
     for (const task of tasks) {
       running++;
       executeTask(pool, task).finally(() => { running--; });
     }
   } catch (err) {
-    console.error('[Worker] 拉取任务失败:', err.message);
+    console.error('[Worker] pull failed:', err.message);
   }
 }
 
 async function executeTask(pool, task) {
-  const browser = await pool.acquire();
+  const browser = task.site_type === 'generic' ? null : await pool.acquire();
   let page;
   try {
-    console.log(`[Task] 开始执行 #${task.id} - ${task.task_type} - ${task.target_url}`);
+    console.log(`[Task] Start #${task.id} - ${task.task_type} - ${task.target_url}`);
     if (task.filters) {
-      console.log(`[Task] 筛选规则: ${JSON.stringify(task.filters)}`);
+      console.log(`[Task] Filters: ${JSON.stringify(task.filters)}`);
     }
 
-    const context = await browser.newContext({
+    const context = browser && await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 },
       locale: 'en-US',
     });
-    page = await context.newPage();
+    page = context ? await context.newPage() : null;
 
     const adapter = AdapterFactory.create(task.site_type || 'generic');
-    const result = await adapter.crawl(page, task);
+    const hardTimeoutMs = Math.max(
+      ((task.page_timeout_seconds || 60) + (task.auto_scroll_seconds || 0) + 45) * 1000,
+      120000
+    );
+    await rateLimiter.wait(task.source_id || task.job_id, task.rate_limit_policy);
+
+    const result = await withTimeout(
+      adapter.crawl(page, task),
+      hardTimeoutMs,
+      `Task #${task.id}`
+    );
 
     let images = result.images || [];
     const totalBeforeFilter = images.length;
@@ -150,46 +125,56 @@ async function executeTask(pool, task) {
       const filtered = [];
       const passed = [];
       for (const img of images) {
-        if (passesFilter(img, task.filters)) {
+        if (passesFilter(img, task.filters, task.site_type)) {
           passed.push(img);
         } else {
           filtered.push(img);
         }
       }
+
       if (filtered.length > 0) {
-        console.log(`[Filter] 筛选: ${totalBeforeFilter}张 -> 通过${passed.length}张, 过滤${filtered.length}张`);
+        console.log(`[Filter] ${totalBeforeFilter} -> passed ${passed.length}, filtered ${filtered.length}`);
         for (const f of filtered.slice(0, 5)) {
-          console.log(`[Filter]   过滤: like=${f.like_count || 0} fav=${f.favorite_count || 0} w=${f.width || '?'} h=${f.height || '?'}`);
+          console.log(`[Filter]   filtered: like=${f.like_count || 0} fav=${f.favorite_count || 0} w=${f.width || '?'} h=${f.height || '?'}`);
         }
         if (filtered.length > 5) {
-          console.log(`[Filter]   ...还有${filtered.length - 5}张被过滤`);
+          console.log(`[Filter]   ...and ${filtered.length - 5} more`);
         }
       }
       images = passed;
     }
 
+    const maxImages = parseInt(task.max_images || 0, 10);
+    if (maxImages > 0 && images.length > maxImages) {
+      images = images.slice(0, maxImages);
+    }
+
     await api.post('/api/tasks/report', {
       page_task_id: task.id,
       host_id: hostId,
+      host_key: HOST_KEY,
       status: 'success',
-      images: images,
+      lease_token: task.lease_token,
+      images,
       new_page_tasks: result.new_tasks || [],
     });
 
-    console.log(`[Task] 完成 #${task.id} - 提取:${totalBeforeFilter} 上报:${images.length} 新任务:${(result.new_tasks || []).length}`);
+    console.log(`[Task] Done #${task.id} - extracted:${totalBeforeFilter} reported:${images.length} new_tasks:${(result.new_tasks || []).length}`);
   } catch (err) {
-    console.error(`[Task] 失败 #${task.id}:`, err.message);
+    console.error(`[Task] Failed #${task.id}:`, err.message);
     try {
       await api.post('/api/tasks/report', {
         page_task_id: task.id,
         host_id: hostId,
+        host_key: HOST_KEY,
         status: 'failed',
+        lease_token: task.lease_token,
         error_message: err.message,
         images: [],
         new_page_tasks: [],
       });
     } catch (reportErr) {
-      console.error('[Task] 回传失败:', reportErr.message);
+      console.error('[Task] report failed:', reportErr.message);
     }
   } finally {
     if (page) {
@@ -197,28 +182,33 @@ async function executeTask(pool, task) {
       try { await page.close(); } catch {}
       try { await ctx.close(); } catch {}
     }
-    pool.release(browser);
+    if (browser) pool.release(browser);
   }
 }
 
 async function main() {
-  console.log(`[Worker] 启动 - HOST_KEY=${HOST_KEY} MAX_CONCURRENCY=${MAX_CONCURRENCY}`);
-  const pool = new BrowserPool(MAX_CONCURRENCY);
-  await pool.init();
+  if (!HOST_KEY || HOST_KEY.length < 16) throw new Error('Set a unique HOST_KEY with at least 16 characters');
+  console.log(`[Worker] Starting - MAX_CONCURRENCY=${maxConcurrency}`);
+  const pool = new BrowserPool(maxConcurrency);
+  if (AdapterFactory.supportedSiteTypes().some(site => site !== 'generic')) await pool.init();
 
-  await heartbeat();
-  setInterval(heartbeat, 30000);
+  await heartbeat(pool);
+  setInterval(() => {
+    heartbeat(pool).catch(err => {
+      console.error('[Heartbeat] timer failed:', err.message);
+    });
+  }, 30000);
 
   setInterval(() => pullAndExecute(pool), PULL_INTERVAL);
 
   process.on('SIGTERM', async () => {
-    console.log('[Worker] 收到SIGTERM，正在关闭...');
+    console.log('[Worker] Received SIGTERM, shutting down...');
     await pool.destroy();
     process.exit(0);
   });
 }
 
 main().catch(err => {
-  console.error('[Worker] 启动失败:', err);
+  console.error('[Worker] Startup failed:', err);
   process.exit(1);
 });

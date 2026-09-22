@@ -8,20 +8,24 @@ class BrowserPool {
     this.waiting = [];
   }
 
+  async createBrowser() {
+    return chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-zygote',
+      ]
+    });
+  }
+
   async init() {
     console.log(`[BrowserPool] 初始化 ${this.maxSize} 个浏览器实例...`);
     for (let i = 0; i < this.maxSize; i++) {
-      const browser = await chromium.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--no-first-run',
-          '--no-zygote',
-        ]
-      });
+      const browser = await this.createBrowser();
       this.browsers.push(browser);
       this.available.push(browser);
     }
@@ -41,8 +45,36 @@ class BrowserPool {
     if (this.waiting.length > 0) {
       const resolve = this.waiting.shift();
       resolve(browser);
+    } else if (this.browsers.length > this.maxSize) {
+      this.browsers = this.browsers.filter(item => item !== browser);
+      browser.close().catch(() => {});
     } else {
       this.available.push(browser);
+    }
+  }
+
+  async resize(newSize) {
+    const targetSize = Math.max(1, parseInt(newSize, 10) || 1);
+    if (targetSize === this.maxSize) return;
+
+    const previousSize = this.maxSize;
+    this.maxSize = targetSize;
+
+    if (targetSize > previousSize) {
+      console.log(`[BrowserPool] Resize up: ${previousSize} -> ${targetSize}`);
+      for (let i = previousSize; i < targetSize; i++) {
+        const browser = await this.createBrowser();
+        this.browsers.push(browser);
+        this.available.push(browser);
+      }
+      return;
+    }
+
+    console.log(`[BrowserPool] Resize down: ${previousSize} -> ${targetSize}`);
+    while (this.browsers.length > this.maxSize && this.available.length > 0) {
+      const browser = this.available.pop();
+      this.browsers = this.browsers.filter(item => item !== browser);
+      try { await browser.close(); } catch {}
     }
   }
 

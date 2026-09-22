@@ -2,8 +2,93 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
+const { assertPublicHttpUrl } = require('../services/urlPolicy');
 
-// 创建任务
+const supportedSiteTypes = new Set(['generic']);
+
+function buildImageQuery(req, jobId) {
+  const {
+    img_sort_by = 'created_at',
+    img_sort_order = 'desc',
+    img_min_like,
+    img_min_favorite,
+    img_min_comment,
+    img_min_share,
+    img_expand_status,
+  } = req.query;
+
+  const sortableFields = new Set([
+    'created_at',
+    'like_count',
+    'favorite_count',
+    'comment_count',
+    'share_count',
+    'width',
+    'height',
+  ]);
+  const sortField = sortableFields.has(img_sort_by) ? img_sort_by : 'created_at';
+  const sortOrder = String(img_sort_order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const sortExpr = sortField === 'created_at' ? 'created_at' : `COALESCE(${sortField}, 0)`;
+
+  const imageWhere = ['job_id = ?', "COALESCE(status, '') != 'deleted'"];
+  const imageParams = [jobId];
+
+  const appendMinFilter = (value, column) => {
+    if (value !== undefined && value !== null && value !== '') {
+      imageWhere.push(`COALESCE(${column}, 0) >= ?`);
+      imageParams.push(parseInt(value, 10) || 0);
+    }
+  };
+
+  appendMinFilter(img_min_like, 'like_count');
+  appendMinFilter(img_min_favorite, 'favorite_count');
+  appendMinFilter(img_min_comment, 'comment_count');
+  appendMinFilter(img_min_share, 'share_count');
+
+  if (img_expand_status) {
+    imageWhere.push('expand_status = ?');
+    imageParams.push(img_expand_status);
+  }
+
+  return {
+    sortExpr,
+    sortOrder,
+    imageWhereSql: imageWhere.join(' AND '),
+    imageParams,
+    imageQuery: {
+      sort_by: sortField,
+      sort_order: sortOrder.toLowerCase(),
+      min_like: img_min_like ?? '',
+      min_favorite: img_min_favorite ?? '',
+      min_comment: img_min_comment ?? '',
+      min_share: img_min_share ?? '',
+      expand_status: img_expand_status ?? '',
+    },
+  };
+}
+
+function sanitizeFileName(value) {
+  return String(value || 'image')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+    .replace(/\s+/g, '_')
+    .slice(0, 80);
+}
+
+function toAsciiFileName(value, fallback = 'images') {
+  const ascii = sanitizeFileName(value)
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return ascii || fallback;
+}
+
+async function normalizeInitialUrls(initialUrls) {
+  const urls = Array.isArray(initialUrls) ? initialUrls : [initialUrls];
+  return Promise.all(urls
+    .filter(Boolean)
+    .map((url) => assertPublicHttpUrl(url, 'initial_urls')));
+}
+
 router.post('/', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -14,6 +99,19 @@ router.post('/', async (req, res) => {
       page_timeout_seconds = 60, max_retry_count = 3, max_images,
       start_mode = 'immediate', scheduled_at, filters
     } = req.body;
+
+    if (!supportedSiteTypes.has(site_type)) {
+      await conn.rollback();
+      return res.status(400).json({
+        error: `site_type=${site_type} is not supported in distributed crawler V1. Use generic public website crawling only.`
+      });
+    }
+
+    const urls = await normalizeInitialUrls(initial_urls);
+    if (urls.length === 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: '至少需要一个公开 http(s) 入口 URL' });
+    }
 
     const [hosts] = await conn.execute('SELECT id, status FROM hosts WHERE id = ?', [host_id]);
     if (hosts.length === 0) {
@@ -27,7 +125,7 @@ router.post('/', async (req, res) => {
         auto_scroll_seconds, auto_scroll_max_rounds, page_timeout_seconds,
         max_retry_count, max_images, start_mode, scheduled_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-      [name, site_type, host_id, status, JSON.stringify(initial_urls),
+      [name, site_type, host_id, status, JSON.stringify(urls),
        concurrency, auto_scroll_seconds, auto_scroll_max_rounds || 10,
        page_timeout_seconds, max_retry_count, max_images || null, start_mode,
        scheduled_at || null]
@@ -49,7 +147,6 @@ router.post('/', async (req, res) => {
       );
     }
 
-    const urls = Array.isArray(initial_urls) ? initial_urls : [initial_urls];
     for (const url of urls) {
       await conn.execute(
         `INSERT INTO page_tasks (job_id, assigned_host_id, task_type, dispatch_mode, target_url, priority, status)
@@ -71,13 +168,13 @@ router.post('/', async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error('[Jobs] 创建任务失败:', err);
-    res.status(500).json({ error: '创建任务失败', message: err.message });
+    const isValidationError = /initial_urls|url|http|private network|local/i.test(err.message || '');
+    res.status(isValidationError ? 400 : 500).json({ error: '创建任务失败', message: err.message });
   } finally {
     conn.release();
   }
 });
 
-// 获取任务列表
 router.get('/', async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
@@ -87,7 +184,7 @@ router.get('/', async (req, res) => {
 
     if (status) {
       params.push(status);
-      where += ` AND j.status = ?`;
+      where += ' AND j.status = ?';
     }
 
     const [rows] = await db.execute(
@@ -99,7 +196,7 @@ router.get('/', async (req, res) => {
         (SELECT COUNT(*) FROM images img WHERE img.job_id = j.id) as image_count
        FROM jobs j LEFT JOIN hosts h ON j.host_id = h.id
        ${where}
-       ORDER BY j.created_at DESC LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}`,
+       ORDER BY j.created_at DESC LIMIT ${parseInt(limit, 10)} OFFSET ${parseInt(offset, 10)}`,
       params
     );
 
@@ -109,9 +206,9 @@ router.get('/', async (req, res) => {
 
     res.json({
       data: rows,
-      total: parseInt(countResult[0].total),
-      page: parseInt(page),
-      limit: parseInt(limit)
+      total: parseInt(countResult[0].total, 10),
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10)
     });
   } catch (err) {
     console.error('[Jobs] 获取列表失败:', err);
@@ -119,7 +216,61 @@ router.get('/', async (req, res) => {
   }
 });
 
-// 获取任务详情
+router.get('/:id/download-images', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const scope = req.query.scope === 'all' ? 'all' : 'filtered';
+
+    const [jobs] = await db.execute(
+      'SELECT id, name FROM jobs WHERE id = ?',
+      [id]
+    );
+    if (jobs.length === 0) {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+
+    const query = buildImageQuery(req, id);
+    const whereSql = scope === 'all'
+      ? "job_id = ? AND COALESCE(status, '') != 'deleted'"
+      : query.imageWhereSql;
+    const params = scope === 'all' ? [id] : query.imageParams;
+
+    const [images] = await db.execute(
+      `SELECT id, image_url
+       FROM images
+       WHERE ${whereSql}
+       ORDER BY ${query.sortExpr} ${query.sortOrder}, id DESC`,
+      params
+    );
+
+    const urls = Array.from(new Set(
+      images
+        .map(image => image.image_url)
+        .filter(url => typeof url === 'string' && url.trim() !== '')
+    ));
+
+    if (urls.length === 0) {
+      return res.status(400).json({ error: '当前条件下没有可导出的图片 URL' });
+    }
+
+    const rawName = `${sanitizeFileName(jobs[0].name || `job_${id}`)}_${scope}_image_urls.txt`;
+    const asciiName = toAsciiFileName(rawName, `job_${id}_${scope}_image_urls.txt`);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`
+    );
+    res.send(`${urls.join('\n')}\n`);
+  } catch (err) {
+    console.error('[Jobs] 导出图片 URL 失败:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: '导出图片 URL 失败', message: err.message });
+    } else {
+      res.end();
+    }
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -133,12 +284,19 @@ router.get('/:id', async (req, res) => {
     if (jobs.length === 0) return res.status(404).json({ error: '任务不存在' });
 
     const [filters] = await db.execute('SELECT * FROM job_filters WHERE job_id = ?', [id]);
+    const query = buildImageQuery(req, id);
 
     const [images] = await db.execute(
-      `SELECT * FROM images WHERE job_id = ? ORDER BY created_at DESC LIMIT ${parseInt(img_limit)} OFFSET ${parseInt(imgOffset)}`,
-      [id]
+      `SELECT * FROM images
+       WHERE ${query.imageWhereSql}
+       ORDER BY ${query.sortExpr} ${query.sortOrder}, id DESC
+       LIMIT ${parseInt(img_limit, 10)} OFFSET ${parseInt(imgOffset, 10)}`,
+      query.imageParams
     );
-    const [imgCount] = await db.execute('SELECT COUNT(*) as total FROM images WHERE job_id = ?', [id]);
+    const [imgCount] = await db.execute(
+      `SELECT COUNT(*) as total FROM images WHERE ${query.imageWhereSql}`,
+      query.imageParams
+    );
 
     const [pageTasks] = await db.execute(
       `SELECT pt.*, h.name as host_name FROM page_tasks pt
@@ -160,7 +318,8 @@ router.get('/:id', async (req, res) => {
       job: jobs[0],
       filters: filters[0] || null,
       images,
-      img_total: parseInt(imgCount[0].total),
+      img_total: parseInt(imgCount[0].total, 10),
+      image_query: query.imageQuery,
       page_tasks: pageTasks,
       task_stats: taskStats[0]
     });
@@ -170,33 +329,30 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// 暂停任务
 router.post('/:id/pause', async (req, res) => {
   try {
     const { id } = req.params;
     await db.execute(`UPDATE jobs SET status = 'paused', updated_at = NOW() WHERE id = ? AND status IN ('queued','running')`, [id]);
-    await logger.info('job_pause', `暂停任务 #${id}`, { jobId: parseInt(id) });
+    await logger.info('job_pause', `暂停任务 #${id}`, { jobId: parseInt(id, 10) });
     res.json({ message: '任务已暂停' });
   } catch (err) {
     res.status(500).json({ error: '暂停失败' });
   }
 });
 
-// 恢复任务
 router.post('/:id/resume', async (req, res) => {
   try {
     const { id } = req.params;
     const [tasks] = await db.execute(`SELECT COUNT(*) as cnt FROM page_tasks WHERE job_id = ? AND status = 'running'`, [id]);
-    const newStatus = parseInt(tasks[0].cnt) > 0 ? 'running' : 'queued';
+    const newStatus = parseInt(tasks[0].cnt, 10) > 0 ? 'running' : 'queued';
     await db.execute(`UPDATE jobs SET status = ?, updated_at = NOW() WHERE id = ? AND status = 'paused'`, [newStatus, id]);
-    await logger.info('job_resume', `恢复任务 #${id}`, { jobId: parseInt(id) });
+    await logger.info('job_resume', `恢复任务 #${id}`, { jobId: parseInt(id, 10) });
     res.json({ message: '任务已恢复' });
   } catch (err) {
     res.status(500).json({ error: '恢复失败' });
   }
 });
 
-// 取消任务
 router.post('/:id/cancel', async (req, res) => {
   const conn = await db.getConnection();
   try {
@@ -222,7 +378,7 @@ router.post('/:id/cancel', async (req, res) => {
     );
 
     await conn.commit();
-    await logger.info('job_cancel', `取消任务 #${id}`, { jobId: parseInt(id) });
+    await logger.info('job_cancel', `取消任务 #${id}`, { jobId: parseInt(id, 10) });
     res.json({ message: '任务已取消' });
   } catch (err) {
     await conn.rollback();
@@ -232,12 +388,11 @@ router.post('/:id/cancel', async (req, res) => {
   }
 });
 
-// 删除任务(逻辑删除)
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     await db.execute(`UPDATE jobs SET status = 'deleted', updated_at = NOW() WHERE id = ?`, [id]);
-    await logger.info('job_delete', `删除任务 #${id}`, { jobId: parseInt(id) });
+    await logger.info('job_delete', `删除任务 #${id}`, { jobId: parseInt(id, 10) });
     res.json({ message: '任务已删除' });
   } catch (err) {
     res.status(500).json({ error: '删除失败' });

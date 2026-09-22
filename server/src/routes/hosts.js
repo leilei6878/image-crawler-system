@@ -2,17 +2,41 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../services/logger');
+const { secretsEqual } = require('../services/workerAuth');
+
+async function getHeartbeatTimeoutSeconds(dbConn) {
+  const [settings] = await dbConn.execute(
+    `SELECT setting_value FROM system_settings WHERE setting_key = 'heartbeat_timeout_seconds'`
+  );
+  return settings.length > 0 ? parseInt(settings[0].setting_value, 10) : 90;
+}
+
+function resolveHostStatus(host, timeoutSeconds) {
+  if (host.status === 'deleted') return 'deleted';
+  if (host.status === 'disabled') return 'disabled';
+  if (!host.last_heartbeat_at) return 'offline';
+
+  const heartbeatAt = new Date(host.last_heartbeat_at).getTime();
+  if (!Number.isFinite(heartbeatAt)) return 'offline';
+
+  const staleMs = Math.max(timeoutSeconds, 30) * 1000;
+  return Date.now() - heartbeatAt > staleMs ? 'offline' : 'online';
+}
 
 router.get('/', async (req, res) => {
   try {
+    const timeoutSeconds = await getHeartbeatTimeoutSeconds(db);
     const [rows] = await db.execute(
       `SELECT h.*,
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status IN ('pending','retry_waiting')) as real_pending,
         (SELECT COUNT(*) FROM page_tasks pt WHERE pt.assigned_host_id = h.id AND pt.status = 'running') as real_running
-       FROM hosts h ORDER BY h.created_at ASC`
+       FROM hosts h
+       WHERE h.status != 'deleted'
+       ORDER BY h.created_at ASC`
     );
     const data = rows.map(h => ({
       ...h,
+      status: resolveHostStatus(h, timeoutSeconds),
       pending_count: parseInt(h.real_pending) || 0,
       running_count: parseInt(h.real_running) || 0,
       available_slots: Math.max(0, h.max_concurrency - (parseInt(h.real_running) || 0)),
@@ -86,6 +110,49 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+router.delete('/:id', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const { id } = req.params;
+
+    const [hosts] = await conn.execute('SELECT id, name, host_key FROM hosts WHERE id = ?', [id]);
+    if (hosts.length === 0) {
+      await conn.rollback();
+      return res.status(404).json({ error: '主机不存在' });
+    }
+
+    const [activeTasks] = await conn.execute(
+      `SELECT COUNT(*) as cnt
+       FROM page_tasks
+       WHERE assigned_host_id = ?
+         AND status IN ('pending', 'retry_waiting', 'running', 'assigned')`,
+      [id]
+    );
+    if (parseInt(activeTasks[0].cnt, 10) > 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: '该主机仍有未完成任务，不能删除' });
+    }
+
+    await conn.execute('DELETE FROM host_heartbeats WHERE host_id = ?', [id]);
+    await conn.execute('DELETE FROM hosts WHERE id = ?', [id]);
+    await conn.commit();
+
+    await logger.info('host_delete', `删除主机 #${id}`, {
+      hostId: parseInt(id, 10),
+      hostKey: hosts[0].host_key,
+      hostName: hosts[0].name,
+    });
+    res.json({ message: '主机已删除' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('[Hosts] 删除主机失败:', err);
+    res.status(500).json({ error: '删除主机失败', message: err.message });
+  } finally {
+    conn.release();
+  }
+});
+
 // Worker heartbeat
 router.post('/heartbeat', async (req, res) => {
   const conn = await db.getConnection();
@@ -98,10 +165,14 @@ router.post('/heartbeat', async (req, res) => {
     const [hosts] = await conn.execute('SELECT * FROM hosts WHERE host_key = ?', [host_key]);
 
     if (hosts.length === 0) {
+      if (!process.env.WORKER_REGISTRATION_TOKEN ||
+          !secretsEqual(req.body.registration_token, process.env.WORKER_REGISTRATION_TOKEN)) {
+        return res.status(401).json({ error: 'Worker registration token required' });
+      }
       // 自动注册
       const [rows] = await conn.execute(
-        `INSERT INTO hosts (name, host_key, status, max_concurrency, accept_global_expand, host_tags, supported_sites)
-         VALUES (?, ?, 'online', ?, true, ?, ?) RETURNING id`,
+        `INSERT INTO hosts (name, host_key, status, max_concurrency, accept_global_expand, host_tags, supported_sites, last_heartbeat_at)
+         VALUES (?, ?, 'online', ?, true, ?, ?, NOW()) RETURNING id`,
         [host_name || host_key, host_key, max_concurrency || 5,
          JSON.stringify(tags), JSON.stringify(supported_sites)]
       );
@@ -121,7 +192,6 @@ router.post('/heartbeat', async (req, res) => {
       const updateFields = ['status = \'online\'', 'last_heartbeat_at = NOW()', 'updated_at = NOW()'];
       const updateParams = [];
 
-      if (max_concurrency) { updateFields.push('max_concurrency = ?'); updateParams.push(max_concurrency); }
       if (host_name) { updateFields.push('name = ?'); updateParams.push(host_name); }
       if (supported_sites.length > 0) { updateFields.push('supported_sites = ?'); updateParams.push(JSON.stringify(supported_sites)); }
       if (ip_address) { updateFields.push('ip_info = ?'); updateParams.push(ip_address); }
@@ -134,6 +204,55 @@ router.post('/heartbeat', async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?)`,
         [host.id, cpu_usage || null, memory_usage || null, running_count, host.pending_count || 0, ip_address || null]
       );
+
+      if (parseInt(running_count, 10) === 0) {
+        const [staleTasks] = await conn.execute(
+          `SELECT pt.id, pt.retry_count, j.max_retry_count,
+                  pt.started_at, j.page_timeout_seconds, j.auto_scroll_seconds
+           FROM page_tasks pt
+           JOIN jobs j ON j.id = pt.job_id
+           WHERE pt.assigned_host_id = ?
+             AND pt.status = 'running'`,
+          [host.id]
+        );
+
+        for (const task of staleTasks) {
+          const startedAt = new Date(task.started_at).getTime();
+          const timeoutSeconds = Math.max(
+            (parseInt(task.page_timeout_seconds, 10) || 60) +
+            (parseInt(task.auto_scroll_seconds, 10) || 30) + 30,
+            120
+          );
+          if (!Number.isFinite(startedAt) || Date.now() - startedAt <= timeoutSeconds * 1000) {
+            continue;
+          }
+          if (parseInt(task.retry_count, 10) < (parseInt(task.max_retry_count, 10) || 3)) {
+            await conn.execute(
+              `UPDATE page_tasks
+               SET status = 'retry_waiting',
+                   retry_count = retry_count + 1,
+                   lease_token = NULL,
+                   lease_expires_at = NULL,
+                   error_message = 'Recovered stale running task on heartbeat',
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [task.id]
+            );
+          } else {
+            await conn.execute(
+              `UPDATE page_tasks
+               SET status = 'failed',
+                   finished_at = NOW(),
+                   lease_token = NULL,
+                   lease_expires_at = NULL,
+                   error_message = 'Recovered stale running task on heartbeat',
+                   updated_at = NOW()
+               WHERE id = ?`,
+              [task.id]
+            );
+          }
+        }
+      }
 
       const [counts] = await conn.execute(
         `SELECT
@@ -151,6 +270,7 @@ router.post('/heartbeat', async (req, res) => {
       res.json({
         host_id: host.id,
         message: '心跳更新成功',
+        max_concurrency: parseInt(host.max_concurrency, 10) || 1,
         pending_count: parseInt(counts[0].pending) || 0,
         running_count: parseInt(counts[0].running) || 0
       });

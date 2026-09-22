@@ -1,40 +1,45 @@
 const BaseAdapter = require('./base');
+const { fetchPublic, normalizePublicHttpUrl, PublicHttpError } = require('../../../shared/publicHttp');
+const { assertRobotsAllowed, USER_AGENT } = require('../security/robots');
+const { extractImages } = require('../extractorBridge');
 
 class GenericAdapter extends BaseAdapter {
-  constructor() {
-    super('generic');
-  }
+  constructor() { super('generic'); }
 
-  async crawl(page, task) {
-    const timeout = (task.page_timeout_seconds || 60) * 1000;
-
-    await page.goto(task.target_url, {
-      waitUntil: 'networkidle',
-      timeout
+  async crawl(_page, task) {
+    const response = await fetchPublic(task.target_url, {
+      timeoutMs: Math.min(60000, (task.page_timeout_seconds || 30) * 1000),
+      maxBytes: 2 * 1024 * 1024,
+      userAgent: USER_AGENT,
+      beforeRequest: assertRobotsAllowed,
     });
-
-    if (task.auto_scroll_seconds > 0) {
-      await this.scrollPage(page, task.auto_scroll_seconds, task.auto_scroll_max_rounds || 10);
+    if (response.status < 200 || response.status >= 300) {
+      throw new PublicHttpError('HTTP_STATUS', 'Public page returned HTTP ' + response.status, {
+        statusCode: response.status,
+        retryAfter: response.headers['retry-after'],
+      });
     }
-
-    const rawImages = await page.evaluate(() => {
-      const imgs = Array.from(document.querySelectorAll('img'));
-      return imgs
-        .filter(img => img.naturalWidth > 200 && img.naturalHeight > 200)
-        .map(img => ({
-          image_url: img.src,
-          source_page_url: window.location.href,
-          width: img.naturalWidth || null,
-          height: img.naturalHeight || null,
-        }));
+    const contentType = String(response.headers['content-type'] || '').split(';')[0].trim();
+    if (!['text/html', 'application/xhtml+xml'].includes(contentType)) {
+      throw new PublicHttpError('CONTENT_TYPE', 'Public page did not return HTML');
+    }
+    const result = await extractImages({
+      html: response.body.toString('utf8'), url: response.url,
+      max_items: task.max_images || 1000, source_name: 'generic_html',
     });
-
-    const images = rawImages
-      .filter(img => img.image_url && img.image_url.startsWith('http'))
-      .map(img => this.normalizeImage(img));
-
+    const images = [];
+    for (const asset of result.images) {
+      try {
+        images.push({
+          ...asset,
+          image_url: normalizePublicHttpUrl(asset.normalized_image_url),
+          source_page_url: response.url,
+        });
+      } catch {
+        // Invalid/private metadata is never promoted into a downloadable asset.
+      }
+    }
     return { images, new_tasks: [] };
   }
 }
-
 module.exports = GenericAdapter;

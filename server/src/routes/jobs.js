@@ -160,7 +160,7 @@ router.post('/', async (req, res) => {
     await conn.execute(
       `UPDATE hosts SET pending_count = (
         SELECT COUNT(*) FROM page_tasks WHERE assigned_host_id = ? AND status IN ('pending','retry_waiting')
-      ), running_count = (SELECT COUNT(*) FROM page_tasks WHERE assigned_host_id = ? AND status = 'running') WHERE id = ?`,
+      ) WHERE id = ?`,
       [host_id, host_id]
     );
 

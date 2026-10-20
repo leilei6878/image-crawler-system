@@ -127,7 +127,7 @@ class Scheduler {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-    await lockTaskLifecycle(conn);
+      await lockTaskLifecycle(conn);
 
       const [socialJobs] = await conn.execute(
         `SELECT sj.id, sj.job_id, sj.source_id, sj.interval_seconds,
@@ -195,7 +195,7 @@ class Scheduler {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-    await lockTaskLifecycle(conn);
+      await lockTaskLifecycle(conn);
 
       const [tasks] = await conn.execute(
         `SELECT pt.id, pt.job_id, pt.retry_count, j.max_retry_count
@@ -272,7 +272,7 @@ class Scheduler {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
-    await lockTaskLifecycle(conn);
+      await lockTaskLifecycle(conn);
       const [jobs] = await conn.execute(`SELECT id FROM jobs WHERE status IN ('queued','running')`);
       for (const job of jobs) {
         await finalizeJobIfDone(conn, job.id);

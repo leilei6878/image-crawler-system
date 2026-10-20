@@ -205,54 +205,9 @@ router.post('/heartbeat', async (req, res) => {
         [host.id, cpu_usage || null, memory_usage || null, running_count, host.pending_count || 0, ip_address || null]
       );
 
-      if (parseInt(running_count, 10) === 0) {
-        const [staleTasks] = await conn.execute(
-          `SELECT pt.id, pt.retry_count, j.max_retry_count,
-                  pt.started_at, j.page_timeout_seconds, j.auto_scroll_seconds
-           FROM page_tasks pt
-           JOIN jobs j ON j.id = pt.job_id
-           WHERE pt.assigned_host_id = ?
-             AND pt.status = 'running'`,
-          [host.id]
-        );
-
-        for (const task of staleTasks) {
-          const startedAt = new Date(task.started_at).getTime();
-          const timeoutSeconds = Math.max(
-            (parseInt(task.page_timeout_seconds, 10) || 60) +
-            (parseInt(task.auto_scroll_seconds, 10) || 30) + 30,
-            120
-          );
-          if (!Number.isFinite(startedAt) || Date.now() - startedAt <= timeoutSeconds * 1000) {
-            continue;
-          }
-          if (parseInt(task.retry_count, 10) < (parseInt(task.max_retry_count, 10) || 3)) {
-            await conn.execute(
-              `UPDATE page_tasks
-               SET status = 'retry_waiting',
-                   retry_count = retry_count + 1,
-                   lease_token = NULL,
-                   lease_expires_at = NULL,
-                   error_message = 'Recovered stale running task on heartbeat',
-                   updated_at = NOW()
-               WHERE id = ?`,
-              [task.id]
-            );
-          } else {
-            await conn.execute(
-              `UPDATE page_tasks
-               SET status = 'failed',
-                   finished_at = NOW(),
-                   lease_token = NULL,
-                   lease_expires_at = NULL,
-                   error_message = 'Recovered stale running task on heartbeat',
-                   updated_at = NOW()
-               WHERE id = ?`,
-              [task.id]
-            );
-          }
-        }
-      }
+      // Heartbeat counts are observational, not lease authority. A restarted
+      // Worker may report zero while another process still owns a valid lease.
+      // Only scheduler recovery, using persisted database deadlines, revokes it.
 
       const [counts] = await conn.execute(
         `SELECT

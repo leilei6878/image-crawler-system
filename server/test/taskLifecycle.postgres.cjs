@@ -26,6 +26,7 @@ async function main() {
     app.use('/tasks', require('../src/routes/tasks'));
     app.use('/jobs', require('../src/routes/jobs'));
     app.use('/social', require('../src/routes/social'));
+    app.use('/hosts', require('../src/routes/hosts'));
     await new Promise(resolve => { server = app.listen(0, '127.0.0.1', resolve); });
     const base = 'http://127.0.0.1:' + server.address().port;
     const request = async (route, body) => {
@@ -55,6 +56,8 @@ async function main() {
     const [[duration]] = await db.execute('SELECT EXTRACT(EPOCH FROM (lease_expires_at - clock_timestamp())) AS seconds FROM page_tasks WHERE id = ?', [task.id]);
     assert.ok(Number(duration.seconds) > 170 && Number(duration.seconds) <= 180);
     await db.execute("UPDATE page_tasks SET started_at = clock_timestamp() - INTERVAL '150 seconds' WHERE id = ?", [task.id]);
+    assert.equal((await request('/hosts/heartbeat', { host_key: 'test-key', running_count: 0 })).status, 200);
+    assert.equal((await read(task.id)).status, 'running');
     await scheduler.recoverTimedOutTasks();
     assert.equal((await read(task.id)).status, 'running'); // original 120s regression
     assert.equal((await report(task, { images: [{ image_url: 'https://example.com/asset.png' }, { image_url: 'https://example.com/asset.png' }] })).status, 200);
@@ -128,7 +131,14 @@ async function main() {
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     if (db) await db.close();
-    await admin.query('DROP DATABASE ' + database + ' WITH (FORCE)');
+    // pg.Pool.end can resolve before the server has processed every socket's
+    // Terminate message. Do not FORCE-drop and race an idle client's error event.
+    for (let i = 0; i < 100; i++) {
+      const { rows } = await admin.query('SELECT COUNT(*) AS cnt FROM pg_stat_activity WHERE datname = $1', [database]);
+      if (Number(rows[0].cnt) === 0) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    await admin.query('DROP DATABASE ' + database);
     await admin.end();
   }
 }

@@ -28,3 +28,32 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  task-lifecycle:
+    name: PostgreSQL task lifecycle
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crawler_test
+          POSTGRES_PASSWORD: crawler_test
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U crawler_test -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix server
+      - run: npm test --prefix server
+      - name: Real PostgreSQL and concurrent HTTP lifecycle regression
+        env:
+          TEST_DATABASE_URL: postgresql://crawler_test:crawler_test@127.0.0.1:5432/postgres
+        run: node server/test/taskLifecycle.postgres.cjs

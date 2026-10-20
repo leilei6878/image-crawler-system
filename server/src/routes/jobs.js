@@ -1,3 +1,4 @@
+const { lockTaskLifecycle } = require('../services/taskLifecycle');
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
@@ -93,6 +94,7 @@ router.post('/', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
     const {
       name, site_type, host_id, initial_urls, concurrency = 3,
       auto_scroll_seconds = 30, auto_scroll_max_rounds = 10,
@@ -158,7 +160,7 @@ router.post('/', async (req, res) => {
     await conn.execute(
       `UPDATE hosts SET pending_count = (
         SELECT COUNT(*) FROM page_tasks WHERE assigned_host_id = ? AND status IN ('pending','retry_waiting')
-      ) WHERE id = ?`,
+      ), running_count = (SELECT COUNT(*) FROM page_tasks WHERE assigned_host_id = ? AND status = 'running') WHERE id = ?`,
       [host_id, host_id]
     );
 
@@ -357,6 +359,7 @@ router.post('/:id/cancel', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
     const { id } = req.params;
     const [jobs] = await conn.execute('SELECT status, host_id FROM jobs WHERE id = ?', [id]);
     if (jobs.length === 0) {
@@ -366,15 +369,15 @@ router.post('/:id/cancel', async (req, res) => {
 
     await conn.execute(`UPDATE jobs SET status = 'cancelled', updated_at = NOW() WHERE id = ?`, [id]);
     await conn.execute(
-      `UPDATE page_tasks SET status = 'cancelled', updated_at = NOW()
-       WHERE job_id = ? AND status IN ('pending','retry_waiting','assigned')`, [id]
+      `UPDATE page_tasks SET status = 'cancelled', lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+       WHERE job_id = ? AND status IN ('pending','running','retry_waiting','assigned')`, [id]
     );
 
     await conn.execute(
       `UPDATE hosts SET pending_count = (
         SELECT COUNT(*) FROM page_tasks WHERE assigned_host_id = ? AND status IN ('pending','retry_waiting')
-      ) WHERE id = ?`,
-      [jobs[0].host_id, jobs[0].host_id]
+      ), running_count = (SELECT COUNT(*) FROM page_tasks WHERE assigned_host_id = ? AND status = 'running') WHERE id = ?`,
+      [jobs[0].host_id, jobs[0].host_id, jobs[0].host_id]
     );
 
     await conn.commit();

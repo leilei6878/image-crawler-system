@@ -1,3 +1,4 @@
+const { lockTaskLifecycle } = require('./taskLifecycle');
 const cron = require('node-cron');
 const db = require('../db');
 const logger = require('./logger');
@@ -126,6 +127,7 @@ class Scheduler {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
 
       const [socialJobs] = await conn.execute(
         `SELECT sj.id, sj.job_id, sj.source_id, sj.interval_seconds,
@@ -193,27 +195,19 @@ class Scheduler {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
 
       const [tasks] = await conn.execute(
-        `SELECT pt.id, pt.job_id, pt.retry_count, pt.started_at,
-                j.page_timeout_seconds, j.auto_scroll_seconds, j.max_retry_count
+        `SELECT pt.id, pt.job_id, pt.retry_count, j.max_retry_count
          FROM page_tasks pt
          JOIN jobs j ON j.id = pt.job_id
-         WHERE pt.status = 'running'`
+         WHERE pt.status = 'running'
+           AND (pt.lease_expires_at IS NULL OR pt.lease_expires_at <= clock_timestamp())
+         FOR UPDATE OF pt`
       );
 
       const affectedJobIds = new Set();
-      const now = Date.now();
       for (const task of tasks) {
-        const startedAt = new Date(task.started_at).getTime();
-        if (!Number.isFinite(startedAt)) continue;
-
-        const timeoutSeconds = Math.max(
-          toInt(task.page_timeout_seconds, 60) + toInt(task.auto_scroll_seconds, 0) + 60,
-          120
-        );
-        if (now - startedAt <= timeoutSeconds * 1000) continue;
-
         const retryCount = toInt(task.retry_count, 0);
         const maxRetryCount = toInt(task.max_retry_count, 3);
         if (retryCount < maxRetryCount) {
@@ -278,6 +272,7 @@ class Scheduler {
     const conn = await db.getConnection();
     try {
       await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
       const [jobs] = await conn.execute(`SELECT id FROM jobs WHERE status IN ('queued','running')`);
       for (const job of jobs) {
         await finalizeJobIfDone(conn, job.id);

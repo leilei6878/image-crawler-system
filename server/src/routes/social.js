@@ -1,3 +1,4 @@
+const { lockTaskLifecycle } = require('../services/taskLifecycle');
 const express = require('express');
 const db = require('../db');
 const logger = require('../services/logger');
@@ -472,6 +473,7 @@ router.post('/jobs', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
 
     const source = await getSource(req.body.source_id, conn);
     if (!source) {
@@ -559,6 +561,7 @@ router.post('/jobs/:id/run', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
 
     const job = await getSocialJob(req.params.id, conn);
     if (!job) {
@@ -638,6 +641,7 @@ router.post('/jobs/:id/cancel', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
 
     const job = await getSocialJob(req.params.id, conn);
     if (!job) {

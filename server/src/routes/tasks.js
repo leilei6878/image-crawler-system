@@ -1,3 +1,4 @@
+const { lockTaskLifecycle, leaseDurationSeconds } = require('../services/taskLifecycle');
 const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
@@ -8,12 +9,6 @@ const { authenticateWorker, secretsEqual } = require('../services/workerAuth');
 
 function dbDate(date = new Date()) {
   return date;
-}
-
-function leaseDurationSeconds(task) {
-  const pageTimeout = parseInt(task.page_timeout_seconds, 10) || 60;
-  const scrollTimeout = parseInt(task.auto_scroll_seconds, 10) || 0;
-  return Math.max(pageTimeout + scrollTimeout + 90, 180);
 }
 
 function passesFilter(img, filter, siteType) {
@@ -73,6 +68,7 @@ router.post('/pull', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
     const { host_id, host_key, max_tasks = 1 } = req.body;
     const requestedTasks = parseInt(max_tasks, 10);
     if (!Number.isInteger(requestedTasks) || requestedTasks <= 0 || requestedTasks > 20) {
@@ -142,12 +138,13 @@ router.post('/pull', async (req, res) => {
       if (jobRunningCounts[task.job_id] >= task.job_concurrency) continue;
 
       const leaseToken = crypto.randomUUID();
-      const leaseExpiresAt = dbDate(new Date(Date.now() + leaseDurationSeconds(task) * 1000));
+      const leaseSeconds = leaseDurationSeconds(task);
       const [updateResult] = await conn.execute(
         `UPDATE page_tasks SET status = 'running', started_at = NOW(),
-             lease_token = ?, lease_expires_at = ?, updated_at = NOW()
-         WHERE id = ? AND status IN ('pending','retry_waiting') RETURNING id`,
-        [leaseToken, leaseExpiresAt, task.id]
+             lease_token = ?, lease_expires_at = clock_timestamp() + (? * INTERVAL '1 second'),
+             finished_at = NULL, updated_at = NOW()
+         WHERE id = ? AND status IN ('pending','retry_waiting') RETURNING id, lease_expires_at`,
+        [leaseToken, leaseSeconds, task.id]
       );
       if (!updateResult || updateResult.length === 0) continue;
 
@@ -208,7 +205,7 @@ router.post('/pull', async (req, res) => {
         source_id: task.source_id,
         rate_limit_policy: task.rate_limit_policy,
         lease_token: leaseToken,
-        lease_expires_at: leaseExpiresAt,
+        lease_expires_at: updateResult[0].lease_expires_at,
         retry_count: task.retry_count,
         filters: taskFilters,
         source_image_id: task.source_image_id
@@ -240,6 +237,7 @@ router.post('/report', async (req, res) => {
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
+    await lockTaskLifecycle(conn);
     const {
       page_task_id, status, images = [], new_page_tasks = [],
       error_message, screenshot_path, host_id, host_key, lease_token
@@ -258,7 +256,7 @@ router.post('/report', async (req, res) => {
       return res.status(400).json({ error: 'new_page_tasks must be an array with at most 1000 items' });
     }
 
-    const [tasks] = await conn.execute('SELECT * FROM page_tasks WHERE id = ? FOR UPDATE', [page_task_id]);
+    const [tasks] = await conn.execute("SELECT *, (lease_expires_at > clock_timestamp()) AS lease_valid FROM page_tasks WHERE id = ? FOR UPDATE", [page_task_id]);
     if (tasks.length === 0) {
       await conn.rollback();
       return res.status(404).json({ error: '任务不存在' });
@@ -278,12 +276,17 @@ router.post('/report', async (req, res) => {
       await conn.commit();
       return res.json({ message: '任务已取消，迟到回传已忽略' });
     }
+    // Validate the attempt before treating a submission as a duplicate. An old
+    // attempt must never complete a newly claimed task, even on the same host.
+    if (!secretsEqual(lease_token, task.lease_token)) {
+      await conn.rollback();
+      return res.status(409).json({ error: 'task lease does not match current attempt' });
+    }
     if (['success', 'failed', 'retry_waiting'].includes(task.status)) {
       await conn.commit();
-      return res.json({ message: '重复回传已忽略' });
+      return res.json({ message: '重复回传已忽略', duplicate: true });
     }
-    const leaseExpiresAt = new Date(task.lease_expires_at).getTime();
-    if (!secretsEqual(lease_token, task.lease_token) || !Number.isFinite(leaseExpiresAt) || leaseExpiresAt <= Date.now()) {
+    if (task.status !== 'running' || task.lease_valid !== true) {
       await conn.rollback();
       return res.status(409).json({ error: 'task lease is missing or expired' });
     }
@@ -291,7 +294,7 @@ router.post('/report', async (req, res) => {
     if (status === 'success') {
       await conn.execute(
         `UPDATE page_tasks SET status = 'success', finished_at = NOW(),
-           lease_token = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = ?`,
+           lease_expires_at = NULL, updated_at = NOW() WHERE id = ?`,
         [page_task_id]
       );
 
@@ -362,11 +365,12 @@ router.post('/report', async (req, res) => {
       }
 
     } else if (status === 'failed') {
-      const maxRetry = task.max_retry_count || 3;
+      const [jobSettings] = await conn.execute('SELECT max_retry_count FROM jobs WHERE id = ?', [task.job_id]);
+      const maxRetry = Number(jobSettings[0]?.max_retry_count ?? 3);
       if (task.retry_count < maxRetry) {
         await conn.execute(
           `UPDATE page_tasks SET status = 'retry_waiting', retry_count = retry_count + 1,
-           error_message = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = ?`,
+           error_message = ?, lease_expires_at = NULL, updated_at = NOW() WHERE id = ?`,
           [error_message || null, page_task_id]
         );
         await conn.execute(
@@ -382,7 +386,7 @@ router.post('/report', async (req, res) => {
       } else {
         await conn.execute(
           `UPDATE page_tasks SET status = 'failed', finished_at = NOW(), error_message = ?,
-           lease_token = NULL, lease_expires_at = NULL, updated_at = NOW() WHERE id = ?`,
+           lease_expires_at = NULL, updated_at = NOW() WHERE id = ?`,
           [error_message || null, page_task_id]
         );
         await logger.error('task_failed', `任务 #${page_task_id} 失败`, { jobId: task.job_id, pageTaskId: page_task_id });

@@ -9,7 +9,7 @@ export default function JobCreate({ showToast }) {
 
   const [form, setForm] = useState({
     name: '',
-    site_type: 'pinterest',
+    site_type: 'generic',
     host_id: '',
     initial_urls: '',
     concurrency: 3,
@@ -82,7 +82,7 @@ export default function JobCreate({ showToast }) {
     }
   }
 
-  const siteTypes = ['pinterest', 'behance', 'unsplash', 'dribbble', 'generic'];
+  const siteTypes = ['generic'];
 
   return (
     <div>
@@ -96,7 +96,7 @@ export default function JobCreate({ showToast }) {
               <label>任务名称 <span className="required">*</span></label>
               <input className="form-control" value={form.name}
                 onChange={e => updateForm('name', e.target.value)}
-                placeholder="如: Pinterest宠物图片采集" />
+                placeholder="如: 公开网页图片采集" />
             </div>
             <div className="form-group">
               <label>站点类型 <span className="required">*</span></label>
@@ -124,7 +124,7 @@ export default function JobCreate({ showToast }) {
             <label>入口URL <span className="required">*</span>（每行一个）</label>
             <textarea className="form-control" rows={4} value={form.initial_urls}
               onChange={e => updateForm('initial_urls', e.target.value)}
-              placeholder="https://www.pinterest.com/search/pins/?q=cats" />
+              placeholder="https://example.com/gallery" />
           </div>
         </div>
 

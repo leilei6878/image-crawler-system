@@ -25,6 +25,7 @@ class Settings:
     crawl_timeout: int = 30
     crawl_retry_count: int = 3
     crawl_concurrency: int = 4
+    crawl_user_agent: str = "image-crawler-system/0.1"
     data_dir: str = "./data"
     download_dir: str = "./data/downloads"
 
@@ -36,6 +37,7 @@ class Settings:
             crawl_timeout=_get_int("CRAWL_TIMEOUT", cls.crawl_timeout),
             crawl_retry_count=_get_int("CRAWL_RETRY_COUNT", cls.crawl_retry_count),
             crawl_concurrency=_get_int("CRAWL_CONCURRENCY", cls.crawl_concurrency),
+            crawl_user_agent=os.getenv("CRAWL_USER_AGENT", cls.crawl_user_agent),
             data_dir=os.getenv("DATA_DIR", cls.data_dir),
             download_dir=os.getenv("DOWNLOAD_DIR", cls.download_dir),
         )

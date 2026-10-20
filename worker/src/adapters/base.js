@@ -8,25 +8,61 @@ class BaseAdapter {
   }
 
   async scrollPage(page, seconds = 30, maxRounds = 10) {
-    const intervalMs = 2000;
-    const totalRounds = Math.min(Math.ceil(seconds * 1000 / intervalMs), maxRounds);
+    const totalMs = Math.max(0, Number(seconds || 0) * 1000);
+    const totalRounds = Math.max(0, Number(maxRounds || 0));
+    if (totalMs <= 0 || totalRounds <= 0) {
+      return {
+        executedRounds: 0,
+        changedRounds: 0,
+        stoppedReason: 'disabled',
+      };
+    }
 
-    let lastHeight = 0;
+    const startedAt = Date.now();
+    const targetRoundMs = Math.max(1200, Math.floor(totalMs / totalRounds));
+
+    let lastHeight = await page.evaluate(() => document.body.scrollHeight);
     let noChangeCount = 0;
+    let executedRounds = 0;
+    let changedRounds = 0;
+    let stoppedReason = 'completed';
 
     for (let round = 0; round < totalRounds; round++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      await page.waitForTimeout(intervalMs);
+      executedRounds++;
+
+      await page.evaluate(() => {
+        const nextY = window.scrollY + Math.max(window.innerHeight * 0.9, 1200);
+        window.scrollTo(0, nextY);
+      });
+      await page.mouse.wheel(0, 2200).catch(() => {});
+      await page.waitForTimeout(400);
 
       const newHeight = await page.evaluate(() => document.body.scrollHeight);
       if (newHeight === lastHeight) {
         noChangeCount++;
-        if (noChangeCount >= 3) break;
+        if (noChangeCount >= 5) {
+          stoppedReason = 'height_stable';
+          break;
+        }
       } else {
         noChangeCount = 0;
+        changedRounds++;
       }
       lastHeight = newHeight;
+
+      const expectedElapsedMs = Math.min(totalMs, (round + 1) * targetRoundMs);
+      const waitMs = startedAt + expectedElapsedMs - Date.now();
+      if (waitMs > 0) {
+        await page.waitForTimeout(waitMs);
+      }
     }
+
+    return {
+      executedRounds,
+      changedRounds,
+      stoppedReason,
+      finalHeight: lastHeight,
+    };
   }
 
   normalizeImage(raw) {
@@ -36,12 +72,12 @@ class BaseAdapter {
       source_page_url: raw.source_page_url || null,
       author_name: raw.author_name || raw.author || null,
       author_url: raw.author_url || null,
-      width: raw.width || null,
-      height: raw.height || null,
-      like_count: raw.like_count || null,
-      favorite_count: raw.favorite_count || null,
-      comment_count: raw.comment_count || null,
-      share_count: raw.share_count || null,
+      width: raw.width ?? null,
+      height: raw.height ?? null,
+      like_count: raw.like_count ?? null,
+      favorite_count: raw.favorite_count ?? null,
+      comment_count: raw.comment_count ?? null,
+      share_count: raw.share_count ?? null,
     };
   }
 }

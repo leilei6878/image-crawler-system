@@ -8,7 +8,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install_worker
 if errorlevel 1 (
   echo.
   echo Worker installation failed. Check logs\worker-install.log for details.
-  pause
+  if not defined WORKER_INSTALL_NO_PAUSE pause
   exit /b 1
 )
 
@@ -18,4 +18,5 @@ echo To start the worker manually:
 echo   cd /d "%~dp0worker"
 echo   npm start
 echo.
-pause
+if not defined WORKER_INSTALL_NO_PAUSE pause
+exit /b 0

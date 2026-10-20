@@ -1,3 +1,8 @@
+if (process.env.DB_CLIENT === 'mysql') {
+  module.exports = require('./db_mysql');
+  return;
+}
+
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -24,6 +29,7 @@ function convertQuery(sql) {
 
 // Wrapper to behave like mysql2 pool
 const db = {
+  close: () => pool.end(),
   async execute(sql, params = []) {
     const convertedSql = convertQuery(sql);
     const result = await pool.query(convertedSql, params);
